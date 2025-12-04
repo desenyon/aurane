@@ -1,0 +1,25 @@
+use torch
+
+experiment SimpleExample:
+    seed = 42
+    device = "cpu"
+
+dataset dummy_data:
+    from torchvision.datasets.FakeData
+    root = "./data"
+    train = True
+    batch = 16
+
+model TinyNet:
+    input_shape = (3, 32, 32)
+    def forward(x):
+        x -> conv2d(16, kernel=3).relu
+          -> maxpool(2)
+          -> flatten()
+          -> dense(64).relu
+          -> dense(10)
+
+train TinyNet on dummy_data:
+    loss = cross_entropy
+    optimizer = adam(lr=0.001)
+    epochs = 2

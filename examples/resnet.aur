@@ -1,0 +1,71 @@
+use torch
+use torchvision
+
+# Advanced ResNet-inspired architecture
+experiment CIFAR10_ResNet:
+    seed = 42
+    device = "auto"
+    backend = "torch"
+    precision = "fp32"
+
+dataset cifar_train:
+    from torchvision.datasets.CIFAR10
+    root = "./data/cifar10"
+    train = True
+    batch = 128
+    
+dataset cifar_val:
+    from torchvision.datasets.CIFAR10
+    root = "./data/cifar10"
+    train = False
+    batch = 256
+
+# Simple ResNet block
+model ResNetBlock:
+    input_shape = (64, 32, 32)
+    def forward(x):
+        x -> conv2d(64, kernel=3, padding=1).relu
+          -> conv2d(64, kernel=3, padding=1)
+
+# Main classification model
+model ResNetClassifier:
+    input_shape = (3, 32, 32)
+    def forward(x):
+        # Initial conv
+        x -> conv2d(64, kernel=7, padding=3).relu
+          -> maxpool(2)
+        
+        # ResNet blocks simulation  
+        x -> conv2d(64, kernel=3, padding=1).relu
+          -> conv2d(64, kernel=3, padding=1).relu
+        
+        x -> conv2d(128, kernel=3, padding=1).relu
+          -> maxpool(2)
+          -> conv2d(128, kernel=3, padding=1).relu
+        
+        x -> conv2d(256, kernel=3, padding=1).relu
+          -> maxpool(2)
+          -> conv2d(256, kernel=3, padding=1).relu
+        
+        # Global average pooling simulation
+        x -> avgpool(4)
+          -> flatten()
+          -> dense(512).relu
+          -> dropout(0.5)
+          -> dense(10)
+
+train ResNetClassifier on cifar_train:
+    validate_on = cifar_val
+    loss = cross_entropy
+    optimizer = adam(lr=1e-3, weight_decay=1e-4)
+    epochs = 50
+    metrics = [accuracy, top5_accuracy]
+    
+    # Learning rate schedule
+    scheduler = cosine_annealing(T_max=50, eta_min=1e-6)
+    
+    # Callbacks
+    early_stopping = true
+    patience = 10
+    save_best = true
+    checkpoint_dir = "./checkpoints/resnet"

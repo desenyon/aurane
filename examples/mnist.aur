@@ -1,0 +1,39 @@
+use torch
+use torchvision
+use aurane.ml as aml
+
+experiment MnistBaseline:
+    seed = 42
+    device = "auto"
+    backend = "torch"
+
+dataset mnist_train:
+    from torchvision.datasets.MNIST
+    root = "./data"
+    train = True
+    batch = 128
+
+dataset mnist_test:
+    from torchvision.datasets.MNIST
+    root = "./data"
+    train = False
+    batch = 256
+
+model MnistNet:
+    input_shape = (1, 28, 28)
+    def forward(x):
+        x -> conv2d(32, kernel=3).relu
+          -> maxpool(2)
+          -> conv2d(64, kernel=3).relu
+          -> maxpool(2)
+          -> flatten()
+          -> dense(128).relu
+          -> dropout(0.5)
+          -> dense(10)
+
+train MnistNet on mnist_train:
+    validate_on = mnist_test
+    loss = cross_entropy
+    optimizer = adam(lr=1e-3)
+    epochs = 5
+    metrics = [accuracy]

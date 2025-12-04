@@ -1,0 +1,75 @@
+use torch
+
+# Transformer for sequence modeling
+experiment TransformerLM:
+    seed = 42
+    device = "auto"
+    backend = "torch"
+
+dataset wikitext_train:
+    from torchvision.datasets.WikiText2
+    root = "./data/wikitext"
+    train = True
+    batch = 64
+    sequence_length = 128
+
+dataset wikitext_val:
+    from torchvision.datasets.WikiText2
+    root = "./data/wikitext"
+    train = False
+    batch = 64
+    sequence_length = 128
+
+model TransformerBlock:
+    input_shape = (128, 512)
+    def forward(x):
+        # Multi-head attention + FFN
+        x -> multihead_attention(heads=8, dim=512)
+          -> layer_norm()
+          -> dense(2048).relu
+          -> dropout(0.1)
+          -> dense(512)
+          -> layer_norm()
+
+model LanguageModel:
+    input_shape = (128,)
+    vocab_size = 50000
+    embedding_dim = 512
+    
+    def forward(x):
+        # Token + positional embeddings
+        x -> embedding(vocab_size, embedding_dim)
+          -> positional_encoding(max_len=128)
+          -> dropout(0.1)
+        
+        # Transformer layers
+        x -> multihead_attention(heads=8, dim=512).residual
+          -> layer_norm()
+          -> dense(2048).gelu
+          -> dense(512)
+          -> dropout(0.1)
+          -> layer_norm()
+        
+        x -> multihead_attention(heads=8, dim=512).residual
+          -> layer_norm()
+          -> dense(2048).gelu
+          -> dense(512)
+          -> dropout(0.1)
+          -> layer_norm()
+        
+        # Output projection
+        x -> dense(vocab_size)
+
+train LanguageModel on wikitext_train:
+    validate_on = wikitext_val
+    loss = cross_entropy_with_label_smoothing(smoothing=0.1)
+    optimizer = adamw(lr=5e-4, betas=(0.9, 0.98), eps=1e-9)
+    epochs = 100
+    metrics = [perplexity, accuracy]
+    
+    scheduler = warmup_cosine(warmup_steps=4000, max_steps=100000)
+    gradient_clip = 1.0
+    mixed_precision = true
+    
+    checkpoint_every = 5
+    log_every = 100

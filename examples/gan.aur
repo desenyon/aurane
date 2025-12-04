@@ -1,0 +1,66 @@
+use torch
+use torchvision
+
+# Generative Adversarial Network for image generation
+experiment MNIST_GAN:
+    seed = 42
+    device = "auto"
+    backend = "torch"
+
+dataset mnist_images:
+    from torchvision.datasets.MNIST
+    root = "./data"
+    train = True
+    batch = 128
+
+# Generator network
+model Generator:
+    input_shape = (100,)
+    latent_dim = 100
+    
+    def forward(z):
+        z -> dense(256).relu
+          -> batch_norm()
+          -> dense(512).relu
+          -> batch_norm()
+          -> dense(1024).relu
+          -> batch_norm()
+          -> dense(784).tanh
+          -> reshape(1, 28, 28)
+
+# Discriminator network
+model Discriminator:
+    input_shape = (1, 28, 28)
+    
+    def forward(x):
+        x -> flatten()
+          -> dense(1024).leaky_relu(0.2)
+          -> dropout(0.3)
+          -> dense(512).leaky_relu(0.2)
+          -> dropout(0.3)
+          -> dense(256).leaky_relu(0.2)
+          -> dropout(0.3)
+          -> dense(1).sigmoid
+
+# GAN training requires special configuration
+train_gan Generator and Discriminator on mnist_images:
+    epochs = 200
+    
+    # Generator training
+    generator_optimizer = adam(lr=2e-4, betas=(0.5, 0.999))
+    generator_loss = binary_cross_entropy
+    
+    # Discriminator training
+    discriminator_optimizer = adam(lr=2e-4, betas=(0.5, 0.999))
+    discriminator_loss = binary_cross_entropy
+    
+    # Training strategy
+    discriminator_steps = 1
+    generator_steps = 1
+    
+    # Evaluation
+    generate_samples_every = 10
+    num_samples = 64
+    save_dir = "./generated_images"
+    
+    metrics = [generator_loss, discriminator_loss, real_score, fake_score]
