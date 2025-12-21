@@ -31,7 +31,7 @@ pip install -e .
 - PyTorch 2.0+ (for ML features)
 - Rich 13.0+ (for beautiful CLI)
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Your First Model
 
@@ -144,7 +144,7 @@ Get detailed insights into your models:
 ```bash
 $ aurane inspect examples/resnet.aur --verbose
 
-📊 Model: ResNetClassifier
+ Model: ResNetClassifier
 ├─ Input: (3, 32, 32)
 ├─ Conv2D(64, kernel=7) → (64, 16, 16)
 ├─ MaxPool(2) → (64, 8, 8)
