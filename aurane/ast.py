@@ -12,6 +12,7 @@ from typing import Any, List, Dict, Optional, Union
 @dataclass
 class UseStatement:
     """Represents a 'use' import statement."""
+
     module: str
     alias: Optional[str] = None
 
@@ -19,6 +20,7 @@ class UseStatement:
 @dataclass
 class Variable:
     """Represents a variable assignment."""
+
     name: str
     value: Any
     type_hint: Optional[str] = None
@@ -27,6 +29,7 @@ class Variable:
 @dataclass
 class HyperParameter:
     """Represents a hyperparameter with search space."""
+
     name: str
     default: Any
     range: Optional[tuple] = None  # (min, max) for numerical
@@ -37,13 +40,14 @@ class HyperParameter:
 class ExperimentNode:
     """
     Represents an 'experiment' block.
-    
+
     Example:
         experiment MnistBaseline:
             seed = 42
             device = "auto"
             backend = "torch"
     """
+
     name: str
     config: Dict[str, Any] = field(default_factory=dict)
     hyperparameters: List[HyperParameter] = field(default_factory=list)
@@ -53,7 +57,7 @@ class ExperimentNode:
 class DatasetNode:
     """
     Represents a 'dataset' block.
-    
+
     Example:
         dataset mnist_train:
             from torchvision.datasets.MNIST
@@ -61,6 +65,7 @@ class DatasetNode:
             train = True
             batch = 128
     """
+
     name: str
     source: Optional[str] = None  # e.g., "torchvision.datasets.MNIST"
     config: Dict[str, Any] = field(default_factory=dict)
@@ -71,9 +76,10 @@ class DatasetNode:
 class LayerOperation:
     """
     Represents a single layer or operation in a model forward chain.
-    
+
     Example: conv2d(32, kernel=3) with activation relu
     """
+
     operation: str  # e.g., "conv2d", "maxpool", "flatten", "dense"
     args: List[Any] = field(default_factory=list)
     kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -83,6 +89,7 @@ class LayerOperation:
 @dataclass
 class CustomLayer:
     """Represents a custom layer definition."""
+
     name: str
     params: Dict[str, Any] = field(default_factory=dict)
     operations: List[LayerOperation] = field(default_factory=list)
@@ -92,13 +99,14 @@ class CustomLayer:
 class ForwardBlock:
     """
     Represents the forward pass definition in a model.
-    
+
     Example:
         def forward(x):
             x -> conv2d(32, kernel=3).relu
               -> maxpool(2)
               -> flatten()
     """
+
     parameter: str = "x"  # Usually "x"
     operations: List[LayerOperation] = field(default_factory=list)
 
@@ -107,13 +115,14 @@ class ForwardBlock:
 class ModelNode:
     """
     Represents a 'model' block.
-    
+
     Example:
         model MnistNet:
             input_shape = (1, 28, 28)
             def forward(x):
                 x -> conv2d(32, kernel=3).relu -> ...
     """
+
     name: str
     config: Dict[str, Any] = field(default_factory=dict)
     forward_block: Optional[ForwardBlock] = None
@@ -123,6 +132,7 @@ class ModelNode:
 @dataclass
 class Callback:
     """Represents a training callback."""
+
     name: str
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -130,6 +140,7 @@ class Callback:
 @dataclass
 class Metric:
     """Represents a training/evaluation metric."""
+
     name: str
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -137,6 +148,7 @@ class Metric:
 @dataclass
 class LRScheduler:
     """Represents a learning rate scheduler."""
+
     name: str
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -145,7 +157,7 @@ class LRScheduler:
 class TrainNode:
     """
     Represents a 'train' block.
-    
+
     Example:
         train MnistNet on mnist_train:
             validate_on = mnist_test
@@ -154,6 +166,7 @@ class TrainNode:
             epochs = 5
             metrics = [accuracy]
     """
+
     model_name: str
     dataset_name: str
     config: Dict[str, Any] = field(default_factory=dict)
@@ -166,9 +179,10 @@ class TrainNode:
 class AuraneProgram:
     """
     Represents a complete Aurane program.
-    
+
     Contains all top-level constructs: imports, experiments, datasets, models, and training blocks.
     """
+
     uses: List[UseStatement] = field(default_factory=list)
     variables: List[Variable] = field(default_factory=list)
     experiments: List[ExperimentNode] = field(default_factory=list)

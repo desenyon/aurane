@@ -21,28 +21,28 @@ from .visualizer import (
 
 __all__ = [
     # Core compilation
-    'compile_file',
-    'compile_source',
-    'parse_aurane',
-    'CompilationError',
-    'ParseError',
+    "compile_file",
+    "compile_source",
+    "parse_aurane",
+    "CompilationError",
+    "ParseError",
     # Type checking
-    'check_types',
-    'TypeCheckResult',
-    'TypeChecker',
+    "check_types",
+    "TypeCheckResult",
+    "TypeChecker",
     # Optimization
-    'optimize_ast',
-    'OptimizationResult',
+    "optimize_ast",
+    "OptimizationResult",
     # Semantic analysis
-    'analyze_semantics',
-    'SemanticAnalysisResult',
+    "analyze_semantics",
+    "SemanticAnalysisResult",
     # Profiling
-    'profile_model',
-    'profile_program',
-    'ModelProfile',
+    "profile_model",
+    "profile_program",
+    "ModelProfile",
     # Visualization
-    'print_model_summary',
-    'visualize_model_architecture',
-    'calculate_output_shape',
-    'calculate_parameters',
+    "print_model_summary",
+    "visualize_model_architecture",
+    "calculate_output_shape",
+    "calculate_parameters",
 ]
