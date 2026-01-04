@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aurane"
 version = "0.1.0"
-description = "A modern, elegant ML-oriented DSL that transpiles to idiomatic Python"
+description = "A modern domain-specific language for machine learning that compiles to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Desenyon"}
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
