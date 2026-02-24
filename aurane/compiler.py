@@ -47,7 +47,6 @@ def compile_file(input_path: str, output_path: str, backend: str = "torch") -> N
     except Exception as e:
         raise CompilationError(f"Compilation failed: {e}")
 
-
     # Write output
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)

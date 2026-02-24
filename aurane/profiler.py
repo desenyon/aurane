@@ -20,6 +20,7 @@ from .ast import (
 )
 from .shapes import infer_output_shape, calculate_params, to_int
 
+
 @dataclass
 class LayerProfile:
     """Profile information for a single layer."""

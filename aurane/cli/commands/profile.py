@@ -7,6 +7,7 @@ from ..utils import validate_file
 from ...parser import parse_aurane
 from ...profiler import ModelProfiler
 
+
 def cmd_profile(args):
     """Profile model performance."""
     if not RICH_AVAILABLE or console is None:

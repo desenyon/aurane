@@ -668,6 +668,7 @@ class TorchCodeGenerator:
             f"    return netG, netD",
         ]
         return "\n".join(lines)
+
     def _generate_scheduler(self, scheduler: LRScheduler) -> str:
         """Generate PyTorch LR scheduler code."""
         name = scheduler.name.lower()

@@ -9,6 +9,7 @@ from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
 from .compile import cmd_compile
 
+
 def cmd_watch(args):
     """Watch mode - auto-recompile on changes."""
     if not RICH_AVAILABLE or console is None:

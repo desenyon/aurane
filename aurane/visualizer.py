@@ -6,7 +6,10 @@ Provides model architecture visualization, training metrics, and analysis.
 
 from typing import Optional, List, Tuple
 from .ast import ModelNode, LayerOperation
-from .shapes import infer_output_shape as calculate_output_shape, calculate_params as calculate_parameters
+from .shapes import (
+    infer_output_shape as calculate_output_shape,
+    calculate_params as calculate_parameters,
+)
 
 try:
     from rich.console import Console

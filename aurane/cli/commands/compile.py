@@ -16,6 +16,7 @@ try:
 except ImportError:
     pass
 
+
 def cmd_compile(args):
     """Enhanced compile command with rich output."""
     if not RICH_AVAILABLE or console is None:
@@ -27,11 +28,11 @@ def cmd_compile(args):
 
         input_stats = get_file_stats(input_file)
         progress = get_progress()
-        
+
         if progress:
             with progress:
                 task = progress.add_task("[cyan]Compiling...", total=100)
-                
+
                 progress.update(task, advance=20, description="[cyan]Reading source...")
                 source = input_file.read_text(encoding="utf-8")
 
@@ -58,8 +59,10 @@ def cmd_compile(args):
         table.add_row("[green][OK] Status", "[green bold]Success")
         table.add_row("Input", f"[dim]{args.input}[/dim]")
         table.add_row("Output", f"[dim]{args.output}[/dim]")
-        table.add_row("Compression", f"[yellow]{output_stats['size'] / input_stats['size']:.1f}x[/yellow]")
-        
+        table.add_row(
+            "Compression", f"[yellow]{output_stats['size'] / input_stats['size']:.1f}x[/yellow]"
+        )
+
         console.print(Panel(table, title="[bold green]Compilation Complete", border_style="green"))
         return 0
 
@@ -69,6 +72,7 @@ def cmd_compile(args):
     except Exception as e:
         console.print(f"\n[red][FAIL] Unexpected Error:[/red]\n{e}")
         return 1
+
 
 def cmd_compile_basic(args):
     """Basic compile command without rich."""

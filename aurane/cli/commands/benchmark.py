@@ -16,6 +16,7 @@ try:
 except ImportError:
     pass
 
+
 def cmd_benchmark(args):
     """Benchmark compilation performance."""
     if not RICH_AVAILABLE or console is None:
@@ -63,10 +64,11 @@ def cmd_benchmark(args):
         console.print(f"[red][FAIL] Error:[/red] {e}")
         return 1
 
+
 def show_benchmark_results(times, file_path):
     """Display benchmark results in a table."""
     import statistics
-    
+
     table = Table(show_header=True, title="Benchmark Results")
     table.add_column("Phase", style="cyan")
     table.add_column("Mean", justify="right")

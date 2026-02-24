@@ -51,7 +51,7 @@ def get_progress():
     """Create a standard progress bar."""
     if not RICH_AVAILABLE or console is None:
         return None
-        
+
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),

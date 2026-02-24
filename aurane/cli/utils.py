@@ -5,6 +5,7 @@ Utility functions for Aurane CLI.
 from pathlib import Path
 from typing import Dict, Any
 
+
 def validate_file(path: str, extensions: list = [".aur"]) -> Path:
     """Validate input file exists and has correct extension."""
     file_path = Path(path)

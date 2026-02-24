@@ -6,6 +6,7 @@ from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
 from ...parser import parse_aurane
 
+
 def cmd_lint(args):
     """Lint Aurane files for potential issues."""
     if not RICH_AVAILABLE or console is None:
@@ -26,26 +27,28 @@ def cmd_lint(args):
         # Check style issues and auto-fix
         for i, line in enumerate(lines, 1):
             original_line = line
-            
+
             # Whitespace
             if line != line.rstrip():
                 issues.append(("info", f"Line {i}: Trailing whitespace"))
                 if getattr(args, "auto_fix", False):
                     line = line.rstrip()
                     fixed = True
-                    
+
             # Missing colons on blocks
             stripped = line.strip()
             if stripped.startswith(("def ", "model ", "dataset ", "train ", "experiment ")):
                 if not stripped.endswith(":"):
-                    issues.append(("warning", f"Line {i}: Missing colon at end of block definition"))
+                    issues.append(
+                        ("warning", f"Line {i}: Missing colon at end of block definition")
+                    )
                     if getattr(args, "auto_fix", False):
                         line = line + ":"
                         fixed = True
-                        
+
             if len(line) > 100:
                 issues.append(("warning", f"Line {i}: Line too long ({len(line)} > 100)"))
-                
+
             new_lines.append(line)
 
         new_source = "\n".join(new_lines)
@@ -67,7 +70,11 @@ def cmd_lint(args):
 
         for sev, msg in issues:
             color = {"error": "red", "warning": "yellow", "info": "cyan"}.get(sev, "white")
-            if getattr(args, "auto_fix", False) and sev in ("info", "warning") and "Line too long" not in msg:
+            if (
+                getattr(args, "auto_fix", False)
+                and sev in ("info", "warning")
+                and "Line too long" not in msg
+            ):
                 console.print(f"[{color}][{sev.upper()}][/{color}] {msg} [green](Fixed)[/green]")
             else:
                 console.print(f"[{color}][{sev.upper()}][/{color}] {msg}")

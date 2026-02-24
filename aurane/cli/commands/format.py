@@ -5,6 +5,7 @@ Format command for Aurane CLI.
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
 
+
 def cmd_format(args):
     """Format Aurane source files."""
     if not RICH_AVAILABLE or console is None:
@@ -43,6 +44,7 @@ def cmd_format(args):
     except Exception as e:
         console.print(f"[red][FAIL] Error:[/red] {e}")
         return 1
+
 
 def format_aurane_code(code: str) -> str:
     """Format Aurane code with consistent style."""

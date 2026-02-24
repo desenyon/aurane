@@ -9,6 +9,7 @@ from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
 from ...compiler import compile_to_temp
 
+
 def cmd_run(args):
     """Compile and run an Aurane file."""
     try:
@@ -17,7 +18,7 @@ def cmd_run(args):
 
         if RICH_AVAILABLE and console:
             console.print(f"[cyan]Compiling:[/cyan] {args.input}")
-            
+
         # Compile to temporary file
         temp_path = compile_to_temp(source, backend=args.backend)
 

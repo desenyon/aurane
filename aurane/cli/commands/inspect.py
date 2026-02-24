@@ -14,6 +14,7 @@ try:
 except ImportError:
     pass
 
+
 def cmd_inspect(args):
     """Inspect an Aurane file and show its structure."""
     if not RICH_AVAILABLE or console is None:
@@ -41,6 +42,7 @@ def cmd_inspect(args):
     except Exception as e:
         console.print(f"[red][FAIL] Error:[/red] {e}")
         return 1
+
 
 def show_ast_tree(ast):
     """Display AST as a tree structure."""

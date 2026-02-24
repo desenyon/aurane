@@ -17,7 +17,7 @@ from aurane.semantic_analyzer import (
 
 class TestSemanticAnalyzer:
     """Tests for SemanticAnalyzer class."""
-    
+
     def test_analyzer_initialization(self):
         """Test analyzer initialization."""
         source = """model Net:
@@ -27,7 +27,7 @@ class TestSemanticAnalyzer:
         program = parse_aurane(source)
         analyzer = SemanticAnalyzer(program)
         assert analyzer.program == program
-    
+
     def test_analyze_returns_result(self):
         """Test that analyze returns SemanticAnalysisResult."""
         source = """model Net:
@@ -38,7 +38,7 @@ class TestSemanticAnalyzer:
         analyzer = SemanticAnalyzer(program)
         result = analyzer.analyze()
         assert isinstance(result, SemanticAnalysisResult)
-    
+
     def test_analyze_valid_model(self):
         """Test analyzing a valid model."""
         source = """model ValidNet:
@@ -54,7 +54,7 @@ class TestSemanticAnalyzer:
 
 class TestAnalyzeSemantics:
     """Tests for analyze_semantics helper function."""
-    
+
     def test_analyze_semantics_helper(self):
         """Test analyze_semantics helper function."""
         source = """model Net:
@@ -65,7 +65,7 @@ class TestAnalyzeSemantics:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert isinstance(result, SemanticAnalysisResult)
-    
+
     def test_analyze_empty_program(self):
         """Test analyze_semantics on empty program."""
         program = parse_aurane("")
@@ -75,7 +75,7 @@ class TestAnalyzeSemantics:
 
 class TestSemanticAnalysisResult:
     """Tests for SemanticAnalysisResult class."""
-    
+
     def test_result_is_valid(self):
         """Test is_valid property."""
         source = """model Net:
@@ -85,7 +85,7 @@ class TestSemanticAnalysisResult:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_result_has_errors(self):
         """Test errors attribute."""
         source = """model Net:
@@ -94,9 +94,9 @@ class TestSemanticAnalysisResult:
 """
         program = parse_aurane(source)
         result = analyze_semantics(program)
-        assert hasattr(result, 'errors')
+        assert hasattr(result, "errors")
         assert isinstance(result.errors, list)
-    
+
     def test_result_has_warnings(self):
         """Test warnings attribute."""
         source = """model Net:
@@ -105,85 +105,84 @@ class TestSemanticAnalysisResult:
 """
         program = parse_aurane(source)
         result = analyze_semantics(program)
-        assert hasattr(result, 'warnings')
+        assert hasattr(result, "warnings")
         assert isinstance(result.warnings, list)
 
 
 class TestActivationsSet:
     """Tests for ACTIVATIONS constant."""
-    
+
     def test_activations_is_set(self):
         """Test that ACTIVATIONS is a set."""
         assert isinstance(ACTIVATIONS, (set, frozenset))
-    
+
     def test_common_activations(self):
         """Test that common activations are included."""
-        assert 'relu' in ACTIVATIONS
-        assert 'sigmoid' in ACTIVATIONS
-        assert 'tanh' in ACTIVATIONS
-    
+        assert "relu" in ACTIVATIONS
+        assert "sigmoid" in ACTIVATIONS
+        assert "tanh" in ACTIVATIONS
+
     def test_gelu_activation(self):
         """Test GELU activation."""
-        assert 'gelu' in ACTIVATIONS
-    
+        assert "gelu" in ACTIVATIONS
+
     def test_softmax_activation(self):
         """Test softmax activation."""
-        assert 'softmax' in ACTIVATIONS
+        assert "softmax" in ACTIVATIONS
 
 
 class TestOptimizersSet:
     """Tests for OPTIMIZERS constant."""
-    
+
     def test_optimizers_is_set(self):
         """Test that OPTIMIZERS is a set."""
         assert isinstance(OPTIMIZERS, (set, frozenset))
-    
+
     def test_common_optimizers(self):
         """Test that common optimizers are included."""
-        assert 'adam' in OPTIMIZERS or 'Adam' in OPTIMIZERS
-        assert 'sgd' in OPTIMIZERS or 'SGD' in OPTIMIZERS
+        assert "adam" in OPTIMIZERS or "Adam" in OPTIMIZERS
+        assert "sgd" in OPTIMIZERS or "SGD" in OPTIMIZERS
 
 
 class TestLossFunctionsSet:
     """Tests for LOSS_FUNCTIONS constant."""
-    
+
     def test_loss_functions_is_set(self):
         """Test that LOSS_FUNCTIONS is a set."""
         assert isinstance(LOSS_FUNCTIONS, (set, frozenset))
-    
+
     def test_common_loss_functions(self):
         """Test that common loss functions are included."""
         # Check for various possible names
         has_cross_entropy = any(
-            'cross' in name.lower() and 'entropy' in name.lower()
-            for name in LOSS_FUNCTIONS
+            "cross" in name.lower() and "entropy" in name.lower() for name in LOSS_FUNCTIONS
         )
-        has_mse = any('mse' in name.lower() for name in LOSS_FUNCTIONS)
+        has_mse = any("mse" in name.lower() for name in LOSS_FUNCTIONS)
         assert has_cross_entropy or has_mse or len(LOSS_FUNCTIONS) > 0
 
 
 class TestLayerSpecs:
     """Tests for LAYER_SPECS constant."""
-    
+
     def test_layer_specs_is_dict(self):
         """Test that LAYER_SPECS is a dict."""
         assert isinstance(LAYER_SPECS, dict)
-    
+
     def test_common_layers(self):
         """Test that common layers are included."""
-        assert 'dense' in LAYER_SPECS or 'linear' in LAYER_SPECS
-        assert 'conv2d' in LAYER_SPECS
-    
+        assert "dense" in LAYER_SPECS or "linear" in LAYER_SPECS
+        assert "conv2d" in LAYER_SPECS
+
     def test_layer_spec_has_params(self):
         """Test that layer specs have parameter info."""
-        if 'dense' in LAYER_SPECS:
-            spec = LAYER_SPECS['dense']
+        if "dense" in LAYER_SPECS:
+            spec = LAYER_SPECS["dense"]
             assert spec is not None
 
 
 class TestValidModels:
     """Tests for valid model analysis."""
-    
+
     def test_simple_mlp(self):
         """Test analyzing simple MLP."""
         source = """model MLP:
@@ -195,7 +194,7 @@ class TestValidModels:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_cnn_model(self):
         """Test analyzing CNN model."""
         source = """model CNN:
@@ -212,7 +211,7 @@ class TestValidModels:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_model_with_dropout(self):
         """Test analyzing model with dropout."""
         source = """model DropoutNet:
@@ -224,7 +223,7 @@ class TestValidModels:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_model_with_batchnorm(self):
         """Test analyzing model with batch normalization."""
         source = """model BatchNormNet:
@@ -243,7 +242,7 @@ class TestValidModels:
 
 class TestMultipleModels:
     """Tests for analyzing multiple models."""
-    
+
     def test_multiple_models(self):
         """Test analyzing multiple models."""
         source = """model Encoder:
@@ -259,7 +258,7 @@ model Decoder:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_models_can_reference_each_other(self):
         """Test that models can conceptually reference each other."""
         source = """model Generator:
@@ -279,7 +278,7 @@ model Discriminator:
 
 class TestActivationUsage:
     """Tests for activation function usage analysis."""
-    
+
     def test_valid_activation(self):
         """Test using valid activation."""
         source = """model Net:
@@ -290,7 +289,7 @@ class TestActivationUsage:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_multiple_activations(self):
         """Test using multiple activation types."""
         source = """model MultiActNet:
@@ -306,7 +305,7 @@ class TestActivationUsage:
 
 class TestLayerParameterValidation:
     """Tests for layer parameter validation."""
-    
+
     def test_dense_with_units(self):
         """Test dense layer with units parameter."""
         source = """model Net:
@@ -317,7 +316,7 @@ class TestLayerParameterValidation:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_conv2d_with_params(self):
         """Test conv2d with parameters."""
         source = """model Net:
@@ -328,7 +327,7 @@ class TestLayerParameterValidation:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_dropout_with_rate(self):
         """Test dropout with rate parameter."""
         source = """model Net:
@@ -340,7 +339,7 @@ class TestLayerParameterValidation:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_maxpool_with_size(self):
         """Test maxpool with kernel size."""
         source = """model Net:
@@ -355,7 +354,7 @@ class TestLayerParameterValidation:
 
 class TestEdgeCases:
     """Tests for edge cases in semantic analysis."""
-    
+
     def test_empty_model(self):
         """Test analyzing model without forward block."""
         source = """model EmptyModel:
@@ -364,7 +363,7 @@ class TestEdgeCases:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         # Should have warning but no error
-    
+
     def test_single_layer_model(self):
         """Test analyzing single layer model."""
         source = """model SingleLayer:
@@ -374,7 +373,7 @@ class TestEdgeCases:
         program = parse_aurane(source)
         result = analyze_semantics(program)
         assert result.is_valid
-    
+
     def test_model_with_config_only(self):
         """Test model with only config."""
         source = """model ConfigOnly:

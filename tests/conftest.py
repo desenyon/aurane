@@ -16,10 +16,10 @@ from aurane.ast import (
     LayerOperation,
 )
 
-
 # ============================================================================
 # Sample Source Code Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def simple_model_source():
@@ -116,6 +116,7 @@ def mlp_model_source():
 # Parsed Program Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def simple_program(simple_model_source):
     """Parsed simple model program."""
@@ -156,10 +157,11 @@ def empty_program():
 # File Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def temp_aurane_file(simple_model_source):
     """Create a temporary .aur file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.aur', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aur", delete=False) as f:
         f.write(simple_model_source)
         f.flush()
         yield f.name
@@ -171,7 +173,7 @@ def temp_aurane_file(simple_model_source):
 @pytest.fixture
 def temp_cnn_file(cnn_model_source):
     """Create a temporary CNN .aur file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.aur', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aur", delete=False) as f:
         f.write(cnn_model_source)
         f.flush()
         yield f.name
@@ -182,7 +184,7 @@ def temp_cnn_file(cnn_model_source):
 @pytest.fixture
 def temp_complete_file(complete_program_source):
     """Create a temporary complete program .aur file."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.aur', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".aur", delete=False) as f:
         f.write(complete_program_source)
         f.flush()
         yield f.name
@@ -200,6 +202,7 @@ def temp_output_dir():
 # ============================================================================
 # AST Node Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def use_torch():
@@ -260,9 +263,10 @@ def cnn_forward_block(conv2d_op, maxpool_op, flatten_op, dense_op):
 # Utility Functions
 # ============================================================================
 
-def create_temp_file(content: str, suffix: str = '.aur') -> str:
+
+def create_temp_file(content: str, suffix: str = ".aur") -> str:
     """Create a temporary file with given content."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix=suffix, delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
         f.write(content)
         f.flush()
         return f.name
@@ -278,17 +282,14 @@ def cleanup_file(path: str):
 # Pytest Configuration
 # ============================================================================
 
+
 def pytest_configure(config):
     """Configure pytest with custom markers."""
     config.addinivalue_line(
         "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
     )
-    config.addinivalue_line(
-        "markers", "integration: marks tests as integration tests"
-    )
-    config.addinivalue_line(
-        "markers", "cli: marks tests as CLI tests"
-    )
+    config.addinivalue_line("markers", "integration: marks tests as integration tests")
+    config.addinivalue_line("markers", "cli: marks tests as CLI tests")
 
 
 def pytest_collection_modifyitems(config, items):

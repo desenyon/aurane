@@ -12,6 +12,7 @@ except ImportError:
 
 from ...compiler import compile_source
 
+
 def cmd_interactive(args):
     """Start interactive REPL mode."""
     if not RICH_AVAILABLE or console is None:
@@ -25,7 +26,11 @@ def cmd_interactive(args):
 
     while True:
         try:
-            prompt = "[bold cyan]aurane>[/bold cyan]" if not code_buffer else "[bold cyan].......[/bold cyan]"
+            prompt = (
+                "[bold cyan]aurane>[/bold cyan]"
+                if not code_buffer
+                else "[bold cyan].......[/bold cyan]"
+            )
             line = Prompt.ask(prompt)
 
             if not line.strip():
@@ -37,7 +42,9 @@ def cmd_interactive(args):
                     console.print("[yellow]Goodbye![/yellow]")
                     break
                 elif cmd in ("help", "h"):
-                    console.print("[yellow]Available commands: .help, .exit, .clear, .show, .compile[/yellow]")
+                    console.print(
+                        "[yellow]Available commands: .help, .exit, .clear, .show, .compile[/yellow]"
+                    )
                 elif cmd in ("clear", "cls"):
                     code_buffer = []
                     console.print("[yellow]Buffer cleared[/yellow]")
@@ -50,7 +57,9 @@ def cmd_interactive(args):
                     if code_buffer:
                         try:
                             py_code = compile_source("\n".join(code_buffer))
-                            console.print(Syntax(py_code, "python", theme="monokai", line_numbers=True))
+                            console.print(
+                                Syntax(py_code, "python", theme="monokai", line_numbers=True)
+                            )
                         except Exception as e:
                             console.print(f"[red]Error:[/red] {e}")
                     else:

@@ -1,6 +1,9 @@
 name: Publish to PyPI
 
 on:
+  push:
+    tags:
+      - 'v*'
   release:
     types: [published]
   workflow_dispatch:
@@ -65,7 +68,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to == 'pypi')
+    if: github.event_name == 'release' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to == 'pypi')
     needs: build
     runs-on: ubuntu-latest
     environment:

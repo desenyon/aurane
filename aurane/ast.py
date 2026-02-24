@@ -12,8 +12,10 @@ from typing import Any, List, Dict, Optional, Union
 @dataclass(kw_only=True)
 class ASTNode:
     """Base class for all AST nodes with position tracking."""
+
     line: int = 0
     column: int = 0
+
 
 @dataclass
 class UseStatement(ASTNode):

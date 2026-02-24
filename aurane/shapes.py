@@ -24,27 +24,27 @@ def to_int(val: Any, default: int = 0) -> int:
 def infer_output_shape(operation: LayerOperation, input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
     """
     Infer the output shape of a layer given its operation and input shape.
-    
+
     Args:
         operation: The LayerOperation AST node.
         input_shape: The shape of the input tensor (e.g., (C, H, W) or (Features,)).
-        
+
     Returns:
         The inferred output shape.
     """
     op_name = operation.operation.lower()
-    
+
     if op_name == "conv2d":
         if len(input_shape) != 3:
             # Fallback or error
             return input_shape
-            
+
         c, h, w = input_shape
         out_channels = to_int(operation.args[0] if operation.args else 32, 32)
         kernel = to_int(operation.kwargs.get("kernel", 3), 3)
         stride = to_int(operation.kwargs.get("stride", 1), 1)
         padding = to_int(operation.kwargs.get("padding", 0), 0)
-        
+
         h_out = (h + 2 * padding - kernel) // stride + 1
         w_out = (w + 2 * padding - kernel) // stride + 1
         return (out_channels, h_out, w_out)
@@ -52,7 +52,7 @@ def infer_output_shape(operation: LayerOperation, input_shape: Tuple[int, ...]) 
     elif op_name in ("maxpool", "avgpool"):
         if len(input_shape) != 3:
             return input_shape
-            
+
         c, h, w = input_shape
         kernel = to_int(operation.args[0] if operation.args else 2, 2)
         stride = to_int(operation.kwargs.get("stride", kernel), kernel)
@@ -88,9 +88,22 @@ def infer_output_shape(operation: LayerOperation, input_shape: Tuple[int, ...]) 
         return input_shape
 
     # Identity operations (shape-preserving)
-    if op_name in ("dropout", "batchnorm", "batch_norm", "layer_norm", "layernorm", 
-                  "relu", "leaky_relu", "gelu", "sigmoid", "tanh", "softmax",
-                  "positional_encoding", "multihead_attention", "residual"):
+    if op_name in (
+        "dropout",
+        "batchnorm",
+        "batch_norm",
+        "layer_norm",
+        "layernorm",
+        "relu",
+        "leaky_relu",
+        "gelu",
+        "sigmoid",
+        "tanh",
+        "softmax",
+        "positional_encoding",
+        "multihead_attention",
+        "residual",
+    ):
         return input_shape
 
     return input_shape
@@ -99,16 +112,16 @@ def infer_output_shape(operation: LayerOperation, input_shape: Tuple[int, ...]) 
 def calculate_params(operation: LayerOperation, input_shape: Tuple[int, ...]) -> int:
     """
     Calculate the number of trainable parameters in a layer.
-    
+
     Args:
         operation: The LayerOperation AST node.
         input_shape: The shape of the input tensor.
-        
+
     Returns:
         Number of parameters.
     """
     op_name = operation.operation.lower()
-    
+
     if op_name == "conv2d":
         if len(input_shape) != 3:
             return 0
@@ -141,7 +154,9 @@ def calculate_params(operation: LayerOperation, input_shape: Tuple[int, ...]) ->
         return 2 * size
 
     elif op_name == "multihead_attention":
-        embed_dim = to_int(operation.kwargs.get("dim", input_shape[-1] if input_shape else 512), 512)
+        embed_dim = to_int(
+            operation.kwargs.get("dim", input_shape[-1] if input_shape else 512), 512
+        )
         # Q, K, V projections + output projection (each is dim*dim + dim)
         return 4 * (embed_dim * embed_dim + embed_dim)
 

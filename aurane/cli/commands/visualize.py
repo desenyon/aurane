@@ -7,6 +7,7 @@ from ..utils import validate_file
 from ...parser import parse_aurane
 from ...visualizer import visualize_model_architecture
 
+
 def cmd_visualize(args):
     """Visualize model architecture."""
     if not RICH_AVAILABLE or console is None:

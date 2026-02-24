@@ -12,7 +12,7 @@ from aurane.compiler import compile_file, compile_source, CompilationError
 
 class TestCompileSource:
     """Tests for compile_source function."""
-    
+
     def test_compile_simple_source(self):
         """Test compiling simple source code."""
         source = """use torch
@@ -25,19 +25,19 @@ model SimpleNet:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "SimpleNet" in code
-    
+
     def test_compile_empty_source(self):
         """Test compiling empty source."""
         code = compile_source("")
         assert isinstance(code, str)
-    
+
     def test_compile_use_only(self):
         """Test compiling source with only use statements."""
         source = """use torch"""
         code = compile_source(source)
         assert isinstance(code, str)
         assert "import torch" in code
-    
+
     def test_compile_generates_class(self):
         """Test that compile generates PyTorch class."""
         source = """model TestModel:
@@ -53,7 +53,7 @@ model SimpleNet:
         assert "nn.Module" in code
         assert "def __init__" in code
         assert "def forward" in code
-    
+
     def test_compile_conv2d_layer(self):
         """Test compiling conv2d layer."""
         source = """model ConvNet:
@@ -64,7 +64,7 @@ model SimpleNet:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "nn.Conv2d" in code
-    
+
     def test_compile_dense_layer(self):
         """Test compiling dense layer."""
         source = """model DenseNet:
@@ -77,7 +77,7 @@ model SimpleNet:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "nn.Linear" in code
-    
+
     def test_compile_multiple_models(self):
         """Test compiling multiple models."""
         source = """model ModelA:
@@ -92,7 +92,7 @@ model ModelB:
         assert isinstance(code, str)
         assert "class ModelA" in code
         assert "class ModelB" in code
-    
+
     def test_compile_with_experiment(self):
         """Test compiling with experiment block."""
         source = """experiment TestExp:
@@ -106,7 +106,7 @@ model Net:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "class Net" in code
-    
+
     def test_compile_with_dataset(self):
         """Test compiling with dataset block."""
         source = """dataset my_data:
@@ -119,7 +119,7 @@ model Net:
 """
         code = compile_source(source)
         assert isinstance(code, str)
-    
+
     def test_compile_with_train(self):
         """Test compiling with train block."""
         source = """model Net:
@@ -132,7 +132,7 @@ train Net on data:
 """
         code = compile_source(source)
         assert isinstance(code, str)
-    
+
     def test_compile_activations(self):
         """Test compiling various activations."""
         source = """model ActivationNet:
@@ -144,7 +144,7 @@ train Net on data:
 """
         code = compile_source(source)
         assert isinstance(code, str)
-    
+
     def test_compile_dropout(self):
         """Test compiling dropout layer."""
         source = """model DropoutNet:
@@ -156,7 +156,7 @@ train Net on data:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "Dropout" in code or "dropout" in code.lower()
-    
+
     def test_compile_batchnorm(self):
         """Test compiling batchnorm layer."""
         source = """model BNNet:
@@ -167,7 +167,7 @@ train Net on data:
 """
         code = compile_source(source)
         assert isinstance(code, str)
-    
+
     def test_compile_pooling(self):
         """Test compiling pooling layers."""
         source = """model PoolNet:
@@ -184,7 +184,7 @@ train Net on data:
 
 class TestCompileFile:
     """Tests for compile_file function."""
-    
+
     def test_compile_existing_file(self):
         """Test compiling an existing file."""
         source = """use torch
@@ -193,21 +193,21 @@ model FileNet:
     def forward(x):
         x -> dense(10)
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.aur', delete=False) as src_f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".aur", delete=False) as src_f:
             src_f.write(source)
             src_f.flush()
-            
-            output_path = src_f.name.replace('.aur', '.py')
+
+            output_path = src_f.name.replace(".aur", ".py")
             compile_file(src_f.name, output_path)
-            
+
             assert os.path.exists(output_path)
-            with open(output_path, 'r') as out_f:
+            with open(output_path, "r") as out_f:
                 content = out_f.read()
                 assert "FileNet" in content
-            
+
             os.unlink(src_f.name)
             os.unlink(output_path)
-    
+
     def test_compile_nonexistent_file(self):
         """Test compiling nonexistent file."""
         with pytest.raises(FileNotFoundError):
@@ -216,7 +216,7 @@ model FileNet:
 
 class TestGeneratedCode:
     """Tests for the structure of generated code."""
-    
+
     def test_generated_code_imports(self):
         """Test that generated code has necessary imports."""
         source = """model Net:
@@ -226,7 +226,7 @@ class TestGeneratedCode:
         code = compile_source(source)
         assert "import torch" in code
         assert "torch.nn" in code or "import torch.nn as nn" in code
-    
+
     def test_generated_code_is_valid_python(self):
         """Test that generated code is valid Python."""
         source = """model ValidNet:
@@ -235,16 +235,16 @@ class TestGeneratedCode:
           -> dense(10)
 """
         code = compile_source(source)
-        
+
         # Try to compile the generated code as Python
         try:
-            compile(code, '<string>', 'exec')
+            compile(code, "<string>", "exec")
             is_valid = True
         except SyntaxError:
             is_valid = False
-        
+
         assert is_valid, "Generated code has syntax errors"
-    
+
     def test_generated_init_method(self):
         """Test that generated __init__ method is correct."""
         source = """model InitNet:
@@ -255,7 +255,7 @@ class TestGeneratedCode:
         code = compile_source(source)
         assert "def __init__(self)" in code
         assert "super()" in code
-    
+
     def test_generated_forward_method(self):
         """Test that generated forward method is correct."""
         source = """model ForwardNet:
@@ -268,7 +268,7 @@ class TestGeneratedCode:
 
 class TestComplexModels:
     """Tests for compiling complex models."""
-    
+
     def test_compile_cnn(self):
         """Test compiling a CNN model."""
         source = """model CNN:
@@ -286,7 +286,7 @@ class TestComplexModels:
         code = compile_source(source)
         assert isinstance(code, str)
         assert "nn.Conv2d" in code
-    
+
     def test_compile_sequential_layers(self):
         """Test compiling sequential layers."""
         source = """model SeqNet:
@@ -304,7 +304,7 @@ class TestComplexModels:
 
 class TestEdgeCases:
     """Tests for edge cases in compilation."""
-    
+
     def test_compile_comments(self):
         """Test that comments are handled."""
         source = """# This is a comment
@@ -317,7 +317,7 @@ model Net:
 """
         code = compile_source(source)
         assert isinstance(code, str)
-    
+
     def test_compile_extra_whitespace(self):
         """Test handling extra whitespace."""
         source = """

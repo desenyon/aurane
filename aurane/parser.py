@@ -72,7 +72,9 @@ class Parser:
                     elif "=" in line:
                         program.variables.append(self._parse_global_variable())
                     else:
-                        self.errors.append((self.current_line + 1, f"Unknown top-level statement: {line}"))
+                        self.errors.append(
+                            (self.current_line + 1, f"Unknown top-level statement: {line}")
+                        )
                         self.current_line += 1
                 except Exception as e:
                     self.errors.append((self.current_line + 1, str(e)))
@@ -206,7 +208,7 @@ class Parser:
 
         # Get the forward parameter name from the previous model parsing state if possible
         # but for now we just look for common "x ->" or whatever is at the start
-        
+
         while self.current_line < len(self.lines):
             line = self.lines[self.current_line].rstrip()
 
@@ -219,18 +221,18 @@ class Parser:
                 break
 
             stripped = line.strip()
-            
+
             # Remove any leading 'param ->' if present on this line
             # We look for a word followed by ->
             stripped = re.sub(r"^\w+\s*->\s*", "", stripped)
-            
+
             # Split by -> and parse each operation
-            # Note: we need to be careful with -> inside strings if we ever support them, 
+            # Note: we need to be careful with -> inside strings if we ever support them,
             # but for now simple split is better than before
             parts = [p.strip() for p in stripped.split("->") if p.strip()]
             for part in parts:
                 operations.extend(self._parse_operation(part, self.current_line + 1))
-            
+
             self.current_line += 1
 
         return operations
@@ -289,7 +291,9 @@ class Parser:
 
                 args, kwargs = self._parse_arguments(args_str)
 
-                operations.append(LayerOperation(operation=op_name, args=args, kwargs=kwargs, line=line_num))
+                operations.append(
+                    LayerOperation(operation=op_name, args=args, kwargs=kwargs, line=line_num)
+                )
 
         return operations
 
@@ -319,7 +323,9 @@ class Parser:
         if "callbacks" in config:
             callback_names = config.pop("callbacks")
             if isinstance(callback_names, list):
-                callbacks = [Callback(name=str(c), params={}, line=start_line) for c in callback_names]
+                callbacks = [
+                    Callback(name=str(c), params={}, line=start_line) for c in callback_names
+                ]
 
         scheduler = None
         if "scheduler" in config:
@@ -481,7 +487,7 @@ class Parser:
         current = ""
         paren_depth = 0
         bracket_depth = 0
-        
+
         for char in args_str:
             if char == "(":
                 paren_depth += 1
@@ -500,14 +506,14 @@ class Parser:
                 current = ""
             else:
                 current += char
-        
+
         if current:
             parts.append(current.strip())
 
         for part in parts:
             if not part:
                 continue
-            if "=" in part and "(" not in part.split("=")[0]: # Simple check for kwarg
+            if "=" in part and "(" not in part.split("=")[0]:  # Simple check for kwarg
                 key, value_str = part.split("=", 1)
                 kwargs[key.strip()] = self._parse_value(value_str.strip())
             else:
