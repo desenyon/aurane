@@ -9,8 +9,14 @@ from dataclasses import dataclass, field
 from typing import Any, List, Dict, Optional, Union
 
 
+@dataclass(kw_only=True)
+class ASTNode:
+    """Base class for all AST nodes with position tracking."""
+    line: int = 0
+    column: int = 0
+
 @dataclass
-class UseStatement:
+class UseStatement(ASTNode):
     """Represents a 'use' import statement."""
 
     module: str
@@ -18,7 +24,7 @@ class UseStatement:
 
 
 @dataclass
-class Variable:
+class Variable(ASTNode):
     """Represents a variable assignment."""
 
     name: str
@@ -27,7 +33,7 @@ class Variable:
 
 
 @dataclass
-class HyperParameter:
+class HyperParameter(ASTNode):
     """Represents a hyperparameter with search space."""
 
     name: str
@@ -37,7 +43,7 @@ class HyperParameter:
 
 
 @dataclass
-class ExperimentNode:
+class ExperimentNode(ASTNode):
     """
     Represents an 'experiment' block.
 
@@ -54,7 +60,7 @@ class ExperimentNode:
 
 
 @dataclass
-class DatasetNode:
+class DatasetNode(ASTNode):
     """
     Represents a 'dataset' block.
 
@@ -73,7 +79,7 @@ class DatasetNode:
 
 
 @dataclass
-class LayerOperation:
+class LayerOperation(ASTNode):
     """
     Represents a single layer or operation in a model forward chain.
 
@@ -87,7 +93,7 @@ class LayerOperation:
 
 
 @dataclass
-class CustomLayer:
+class CustomLayer(ASTNode):
     """Represents a custom layer definition."""
 
     name: str
@@ -96,7 +102,7 @@ class CustomLayer:
 
 
 @dataclass
-class ForwardBlock:
+class ForwardBlock(ASTNode):
     """
     Represents the forward pass definition in a model.
 
@@ -112,7 +118,7 @@ class ForwardBlock:
 
 
 @dataclass
-class ModelNode:
+class ModelNode(ASTNode):
     """
     Represents a 'model' block.
 
@@ -130,7 +136,7 @@ class ModelNode:
 
 
 @dataclass
-class Callback:
+class Callback(ASTNode):
     """Represents a training callback."""
 
     name: str
@@ -138,7 +144,7 @@ class Callback:
 
 
 @dataclass
-class Metric:
+class Metric(ASTNode):
     """Represents a training/evaluation metric."""
 
     name: str
@@ -146,7 +152,7 @@ class Metric:
 
 
 @dataclass
-class LRScheduler:
+class LRScheduler(ASTNode):
     """Represents a learning rate scheduler."""
 
     name: str
@@ -154,7 +160,7 @@ class LRScheduler:
 
 
 @dataclass
-class TrainNode:
+class TrainNode(ASTNode):
     """
     Represents a 'train' block.
 
@@ -176,6 +182,24 @@ class TrainNode:
 
 
 @dataclass
+class TrainGANNode(ASTNode):
+    """
+    Represents a 'train_gan' block.
+
+    Example:
+        train_gan Generator and Discriminator on mnist_images:
+            epochs = 200
+            generator_optimizer = adam(lr=2e-4)
+            ...
+    """
+
+    generator_name: str
+    discriminator_name: str
+    dataset_name: str
+    config: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class AuraneProgram:
     """
     Represents a complete Aurane program.
@@ -189,4 +213,5 @@ class AuraneProgram:
     datasets: List[DatasetNode] = field(default_factory=list)
     models: List[ModelNode] = field(default_factory=list)
     trains: List[TrainNode] = field(default_factory=list)
+    train_gans: List[TrainGANNode] = field(default_factory=list)
     custom_layers: List[CustomLayer] = field(default_factory=list)

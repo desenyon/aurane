@@ -20,70 +20,70 @@ class TestCalculateOutputShape:
         """Test conv2d output shape calculation."""
         op = LayerOperation(operation="conv2d", args=[32], kwargs={"kernel": 3, "padding": 0, "stride": 1})
         input_shape = (3, 32, 32)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (32, 30, 30)  # 32 - 3 + 1 = 30
     
     def test_conv2d_with_padding(self):
         """Test conv2d with padding."""
         op = LayerOperation(operation="conv2d", args=[64], kwargs={"kernel": 3, "padding": 1, "stride": 1})
         input_shape = (32, 16, 16)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (64, 16, 16)  # Same padding
     
     def test_conv2d_with_stride(self):
         """Test conv2d with stride."""
         op = LayerOperation(operation="conv2d", args=[64], kwargs={"kernel": 3, "padding": 1, "stride": 2})
         input_shape = (32, 32, 32)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (64, 16, 16)  # Halved by stride 2
     
     def test_maxpool_shape(self):
         """Test maxpool output shape calculation."""
         op = LayerOperation(operation="maxpool", args=[2])
         input_shape = (32, 16, 16)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (32, 8, 8)  # Halved
     
     def test_avgpool_shape(self):
         """Test avgpool output shape calculation."""
         op = LayerOperation(operation="avgpool", args=[2])
         input_shape = (64, 8, 8)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (64, 4, 4)
     
     def test_flatten_shape(self):
         """Test flatten output shape calculation."""
         op = LayerOperation(operation="flatten")
         input_shape = (64, 4, 4)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (1024,)  # 64 * 4 * 4
     
     def test_dense_shape(self):
         """Test dense output shape calculation."""
         op = LayerOperation(operation="dense", args=[128])
         input_shape = (512,)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (128,)
     
     def test_dropout_preserves_shape(self):
         """Test that dropout preserves shape."""
         op = LayerOperation(operation="dropout", args=[0.5])
         input_shape = (256,)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (256,)
     
     def test_batchnorm_preserves_shape(self):
         """Test that batchnorm preserves shape."""
         op = LayerOperation(operation="batchnorm")
         input_shape = (64, 16, 16)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (64, 16, 16)
     
     def test_global_avg_pool(self):
         """Test global average pooling."""
         op = LayerOperation(operation="global_avg_pool")
         input_shape = (256, 7, 7)
-        output = calculate_output_shape(input_shape, op)
+        output = calculate_output_shape(op, input_shape)
         assert output == (256,)
 
 
@@ -231,27 +231,27 @@ class TestShapeInference:
         shape = model.config.get('input_shape', (3, 32, 32))
         
         # Conv2d 32: (3, 32, 32) -> (32, 32, 32)
-        shape = calculate_output_shape(shape, ops[0])
+        shape = calculate_output_shape(ops[0], shape)
         assert shape == (32, 32, 32)
         
         # Maxpool 2: (32, 32, 32) -> (32, 16, 16)
-        shape = calculate_output_shape(shape, ops[1])
+        shape = calculate_output_shape(ops[1], shape)
         assert shape == (32, 16, 16)
         
         # Conv2d 64: (32, 16, 16) -> (64, 16, 16)
-        shape = calculate_output_shape(shape, ops[2])
+        shape = calculate_output_shape(ops[2], shape)
         assert shape == (64, 16, 16)
         
         # Maxpool 2: (64, 16, 16) -> (64, 8, 8)
-        shape = calculate_output_shape(shape, ops[3])
+        shape = calculate_output_shape(ops[3], shape)
         assert shape == (64, 8, 8)
         
         # Flatten: (64, 8, 8) -> (4096,)
-        shape = calculate_output_shape(shape, ops[4])
+        shape = calculate_output_shape(ops[4], shape)
         assert shape == (4096,)
         
         # Dense 10: (4096,) -> (10,)
-        shape = calculate_output_shape(shape, ops[5])
+        shape = calculate_output_shape(ops[5], shape)
         assert shape == (10,)
 
 
@@ -278,7 +278,7 @@ class TestParameterCounting:
         for op in model.forward_block.operations:
             params = calculate_parameters(op, shape)
             total += params
-            shape = calculate_output_shape(shape, op)
+            shape = calculate_output_shape(op, shape)
         
         assert total > 0
 

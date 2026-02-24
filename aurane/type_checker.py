@@ -17,6 +17,7 @@ from .ast import (
     LayerOperation,
     ForwardBlock,
 )
+from .shapes import infer_output_shape, to_int
 
 
 class TypeKind(Enum):
@@ -58,7 +59,7 @@ class TensorType:
 
 
 @dataclass
-class TypeError:
+class TypeAnalysisError:
     """Represents a type error in the program."""
 
     message: str
@@ -71,8 +72,8 @@ class TypeError:
 class TypeCheckResult:
     """Result of type checking."""
 
-    errors: List[TypeError] = field(default_factory=list)
-    warnings: List[TypeError] = field(default_factory=list)
+    errors: List[TypeAnalysisError] = field(default_factory=list)
+    warnings: List[TypeAnalysisError] = field(default_factory=list)
     inferred_types: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -129,7 +130,7 @@ class TypeChecker:
         for train in self.program.trains:
             if train.model_name not in model_names:
                 self.result.errors.append(
-                    TypeError(
+                    TypeAnalysisError(
                         message=f"Undefined model '{train.model_name}'",
                         location=f"train {train.model_name} on {train.dataset_name}",
                         suggestion=f"Define model '{train.model_name}' or use one of: {', '.join(model_names)}",
@@ -138,7 +139,7 @@ class TypeChecker:
 
             if train.dataset_name not in dataset_names:
                 self.result.errors.append(
-                    TypeError(
+                    TypeAnalysisError(
                         message=f"Undefined dataset '{train.dataset_name}'",
                         location=f"train {train.model_name} on {train.dataset_name}",
                         suggestion=f"Define dataset '{train.dataset_name}' or use one of: {', '.join(dataset_names)}",
@@ -154,7 +155,7 @@ class TypeChecker:
         """Check a single model definition."""
         if not model.forward_block:
             self.result.warnings.append(
-                TypeError(
+                TypeAnalysisError(
                     message=f"Model '{model.name}' has no forward block",
                     location=f"model {model.name}",
                     severity="warning",
@@ -164,7 +165,7 @@ class TypeChecker:
 
         if not model.forward_block.operations:
             self.result.warnings.append(
-                TypeError(
+                TypeAnalysisError(
                     message=f"Model '{model.name}' has empty forward block",
                     location=f"model {model.name}",
                     severity="warning",
@@ -178,7 +179,7 @@ class TypeChecker:
             input_shape = tuple(input_shape)
         else:
             self.result.errors.append(
-                TypeError(
+                TypeAnalysisError(
                     message=f"Invalid input_shape for model '{model.name}'",
                     location=f"model {model.name}",
                     suggestion="input_shape should be a tuple like (1, 28, 28)",
@@ -195,7 +196,7 @@ class TypeChecker:
                 shapes[f"layer_{idx}"] = TensorType(shape=current_shape)
             except Exception as e:
                 self.result.errors.append(
-                    TypeError(
+                    TypeAnalysisError(
                         message=f"Shape inference failed at layer {idx}: {e}",
                         location=f"model {model.name}, operation {op.operation}",
                     )
@@ -208,88 +209,14 @@ class TypeChecker:
 
     def _infer_shape(self, op: LayerOperation, input_shape: tuple) -> tuple:
         """Infer output shape for an operation."""
-        op_name = op.operation.lower()
-
-        def to_int(val, default: int) -> int:
-            if isinstance(val, int):
-                return val
-            if isinstance(val, float):
-                return int(val)
-            if isinstance(val, str):
-                try:
-                    return int(val)
-                except ValueError:
-                    return default
-            return default
-
-        if op_name == "conv2d":
-            if len(input_shape) != 3:
-                raise ValueError(f"conv2d expects 3D input (C, H, W), got {input_shape}")
-            c, h, w = input_shape
-            out_channels = to_int(op.args[0], 32) if op.args else 32
-            kernel = to_int(op.kwargs.get("kernel", 3), 3)
-            stride = to_int(op.kwargs.get("stride", 1), 1)
-            padding = to_int(op.kwargs.get("padding", 0), 0)
-
-            h_out = (h + 2 * padding - kernel) // stride + 1
-            w_out = (w + 2 * padding - kernel) // stride + 1
-
-            if h_out <= 0 or w_out <= 0:
-                raise ValueError(f"Invalid output shape: kernel too large for input")
-
-            return (out_channels, h_out, w_out)
-
-        elif op_name in ("maxpool", "avgpool"):
-            if len(input_shape) != 3:
-                raise ValueError(f"{op_name} expects 3D input (C, H, W)")
-            c, h, w = input_shape
-            kernel = to_int(op.args[0], 2) if op.args else 2
-            stride = to_int(op.kwargs.get("stride", kernel), kernel)
-            return (c, h // stride, w // stride)
-
-        elif op_name == "flatten":
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                return (c * h * w,)
-            return input_shape
-
-        elif op_name in ("dense", "linear"):
-            out_features = to_int(op.args[0], 128) if op.args else 128
-            return (out_features,)
-
-        elif op_name in ("dropout", "batchnorm", "layer_norm"):
-            return input_shape
-
-        elif op_name == "embedding":
-            if len(op.args) >= 2:
-                embed_dim = to_int(op.args[1], 256)
-                seq_len = to_int(input_shape[0], 1) if input_shape else 1
-                return (seq_len, embed_dim)
-            return input_shape
-
-        elif op_name == "multihead_attention":
-            return input_shape
-
-        elif op_name == "positional_encoding":
-            return input_shape
-
-        elif op_name == "global_avg_pool":
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                return (c,)
-            return input_shape
-
-        elif op_name == "residual":
-            return input_shape
-
-        return input_shape
+        return infer_output_shape(op, input_shape)
 
     def _check_datasets(self):
         """Check dataset definitions."""
         for dataset in self.program.datasets:
             if not dataset.source:
                 self.result.warnings.append(
-                    TypeError(
+                    TypeAnalysisError(
                         message=f"Dataset '{dataset.name}' has no source",
                         location=f"dataset {dataset.name}",
                         severity="warning",
@@ -300,7 +227,7 @@ class TypeChecker:
             if batch is not None:
                 if not isinstance(batch, int) or batch <= 0:
                     self.result.errors.append(
-                        TypeError(
+                        TypeAnalysisError(
                             message=f"Invalid batch size for dataset '{dataset.name}'",
                             location=f"dataset {dataset.name}",
                             suggestion="batch should be a positive integer",
@@ -315,7 +242,7 @@ class TypeChecker:
             if epochs is not None:
                 if not isinstance(epochs, int) or epochs <= 0:
                     self.result.errors.append(
-                        TypeError(
+                        TypeAnalysisError(
                             message=f"Invalid epochs value",
                             location=f"train {train.model_name}",
                             suggestion="epochs should be a positive integer",
@@ -327,7 +254,7 @@ class TypeChecker:
             if lr is not None:
                 if not isinstance(lr, (int, float)) or lr <= 0:
                     self.result.warnings.append(
-                        TypeError(
+                        TypeAnalysisError(
                             message=f"Invalid learning rate",
                             location=f"train {train.model_name}",
                             severity="warning",

@@ -257,7 +257,9 @@ class TestTrainParsing:
     metrics = [accuracy, loss]
 """
         program = parse_aurane(source)
-        assert program.trains[0].config['metrics'] == ['accuracy', 'loss']
+        assert len(program.trains[0].metrics) == 2
+        assert program.trains[0].metrics[0].name == 'accuracy'
+        assert program.trains[0].metrics[1].name == 'loss'
 
 
 class TestCompleteProgram:

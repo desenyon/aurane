@@ -6,6 +6,7 @@ Provides model architecture visualization, training metrics, and analysis.
 
 from typing import Optional, List, Tuple
 from .ast import ModelNode, LayerOperation
+from .shapes import infer_output_shape as calculate_output_shape, calculate_params as calculate_parameters
 
 try:
     from rich.console import Console
@@ -18,156 +19,7 @@ except ImportError:
     RICH_AVAILABLE = False
 
 
-def calculate_output_shape(input_shape: tuple, operation: LayerOperation) -> tuple:
-    """Calculate output shape after an operation."""
-    op_name = operation.operation.lower()
-
-    def to_int(val, default: int = 0) -> int:
-        """Safely convert a value to int."""
-        if isinstance(val, int):
-            return val
-        if isinstance(val, float):
-            return int(val)
-        if isinstance(val, str):
-            try:
-                return int(val)
-            except ValueError:
-                return default
-        return default
-
-    if op_name == "conv2d":
-        if len(input_shape) == 3:
-            c, h, w = input_shape
-            kernel = to_int(operation.kwargs.get("kernel", 3), 3)
-            out_channels = to_int(operation.args[0], 32) if operation.args else 32
-            stride = to_int(operation.kwargs.get("stride", 1), 1)
-            padding = to_int(operation.kwargs.get("padding", 0), 0)
-
-            h_out = (h + 2 * padding - kernel) // stride + 1
-            w_out = (w + 2 * padding - kernel) // stride + 1
-            return (out_channels, h_out, w_out)
-        return input_shape
-
-    elif op_name == "maxpool" or op_name == "avgpool":
-        if len(input_shape) == 3:
-            c, h, w = input_shape
-            kernel = to_int(operation.args[0], 2) if operation.args else 2
-            stride = to_int(operation.kwargs.get("stride", kernel), kernel)
-            return (c, h // stride, w // stride)
-        return input_shape
-
-    elif op_name == "flatten":
-        if len(input_shape) == 3:
-            c, h, w = input_shape
-            return (c * h * w,)
-        return input_shape
-
-    elif op_name in ("dense", "linear"):
-        out_features = to_int(operation.args[0], 128) if operation.args else 128
-        return (out_features,)
-
-    elif op_name in ("dropout", "batchnorm", "layer_norm"):
-        return input_shape
-
-    elif op_name == "embedding":
-        # embedding(vocab_size, embed_dim) -> (seq_len, embed_dim)
-        if len(operation.args) >= 2:
-            embed_dim = to_int(operation.args[1], 256)
-            if len(input_shape) >= 1:
-                seq_len = to_int(input_shape[0], 1)
-                return (seq_len, embed_dim)
-        return input_shape
-
-    elif op_name == "positional_encoding":
-        return input_shape
-
-    elif op_name == "multihead_attention":
-        return input_shape
-
-    elif op_name == "residual":
-        return input_shape
-
-    elif op_name == "global_avg_pool":
-        if len(input_shape) == 3:
-            c, h, w = input_shape
-            return (c,)
-        return input_shape
-
-    elif op_name == "concat":
-        # Concatenation - depends on axis
-        return input_shape
-
-    elif op_name == "add":
-        return input_shape
-
-    return input_shape
-
-
-def calculate_parameters(operation: LayerOperation, input_shape: tuple) -> int:
-    """Calculate number of parameters for an operation."""
-    op_name = operation.operation.lower()
-
-    def to_int(val, default: int = 0) -> int:
-        """Safely convert a value to int."""
-        if isinstance(val, int):
-            return val
-        if isinstance(val, float):
-            return int(val)
-        if isinstance(val, str):
-            try:
-                return int(val)
-            except ValueError:
-                return default
-        return default
-
-    if op_name == "conv2d":
-        if len(input_shape) == 3:
-            in_channels = to_int(input_shape[0], 1)
-            out_channels = to_int(operation.args[0], 32) if operation.args else 32
-            kernel = to_int(operation.kwargs.get("kernel", 3), 3)
-            # params = (kernel * kernel * in_channels + 1) * out_channels
-            params = kernel * kernel * in_channels * out_channels + out_channels
-            return params
-        return 0
-
-    elif op_name in ("dense", "linear"):
-        in_features = to_int(input_shape[0], 128) if input_shape else 128
-        out_features = to_int(operation.args[0], 128) if operation.args else 128
-        # params = (in_features + 1) * out_features
-        params = in_features * out_features + out_features
-        return params
-
-    elif op_name == "dropout":
-        return 0
-
-    elif op_name == "batchnorm":
-        # BatchNorm has 2 * num_features parameters (gamma and beta)
-        if input_shape:
-            num_features = to_int(input_shape[0], 0)
-            return 2 * num_features
-        return 0
-
-    elif op_name == "embedding":
-        # Embedding has vocab_size * embedding_dim parameters
-        if len(operation.args) >= 2:
-            vocab_size = to_int(operation.args[0], 0)
-            embed_dim = to_int(operation.args[1], 0)
-            return vocab_size * embed_dim
-        return 0
-
-    elif op_name == "multihead_attention":
-        # Multi-head attention parameters
-        dim = to_int(operation.kwargs.get("dim", 512), 512)
-        # Q, K, V projections + output projection
-        return 4 * dim * dim + 4 * dim
-
-    elif op_name == "layer_norm":
-        if input_shape:
-            features = to_int(input_shape[-1], 0)
-            return 2 * features  # gamma and beta
-        return 0
-
-    return 0
+# Removed local implementations in favor of .shapes
 
 
 def print_model_summary(model: ModelNode):
@@ -200,7 +52,7 @@ def print_model_summary(model: ModelNode):
         total_params += params
 
         # Calculate output shape
-        current_shape = calculate_output_shape(current_shape, op)
+        current_shape = calculate_output_shape(op, current_shape)
 
         # Format operation
         op_str = f"{op.operation}("
@@ -252,7 +104,7 @@ def visualize_model_architecture(model: ModelNode, output_file: Optional[str] = 
     current_node = input_node
 
     for idx, op in enumerate(model.forward_block.operations, 1):
-        current_shape = calculate_output_shape(current_shape, op)
+        current_shape = calculate_output_shape(op, current_shape)
         params = calculate_parameters(op, current_shape)
 
         op_desc = f"{op.operation}"
@@ -318,7 +170,7 @@ def plot_layer_shapes(model: ModelNode):
     console.print(text)
 
     for op in model.forward_block.operations:
-        current_shape = calculate_output_shape(current_shape, op)
+        current_shape = calculate_output_shape(op, current_shape)
 
         text = Text()
         text.append("  | ", style="dim")

@@ -13,9 +13,12 @@ from .ast import (
     DatasetNode,
     ModelNode,
     TrainNode,
+    TrainGANNode,
     LayerOperation,
     ForwardBlock,
+    LRScheduler,
 )
+from .shapes import infer_output_shape
 
 
 class TorchCodeGenerator:
@@ -50,9 +53,15 @@ class TorchCodeGenerator:
         for train in self.program.trains:
             sections.append(self._generate_training(train))
 
+        # GAN Training functions
+        for train_gan in self.program.train_gans:
+            sections.append(self._generate_gan_training(train_gan))
+
         # Main execution
         if self.program.trains:
             sections.append(self._generate_main(self.program.trains[0]))
+        elif self.program.train_gans:
+            sections.append(self._generate_gan_training_main(self.program.train_gans[0]))
 
         return "\n\n".join(sections)
 
@@ -64,9 +73,20 @@ class TorchCodeGenerator:
             "import torch.nn.functional as F",
             "import torch.optim as optim",
             "from torch.utils.data import DataLoader",
-            "import torchvision",
-            "import torchvision.transforms as transforms",
         ]
+
+        # Add imports from 'use' statements
+        for use in self.program.uses:
+            if use.alias:
+                imports.append(f"import {use.module} as {use.alias}")
+            else:
+                imports.append(f"import {use.module}")
+
+        # Always add torchvision if not already present, as it's common in examples
+        # but ideally we should check if it's used. For now, keep it for compatibility.
+        if not any("torchvision" in i for i in imports):
+            imports.append("import torchvision")
+            imports.append("import torchvision.transforms as transforms")
 
         return "\n".join(imports)
 
@@ -196,43 +216,22 @@ class TorchCodeGenerator:
         layer_var = self._get_layer_var_name(op_name)
         self.layer_map[idx] = layer_var
 
+        new_shape = infer_output_shape(op, shape)
+
         if op_name == "conv2d":
-            # conv2d(out_channels, kernel=3)
             out_channels = op.args[0] if op.args else 32
             kernel = op.kwargs.get("kernel", 3)
+            stride = op.kwargs.get("stride", 1)
+            padding = op.kwargs.get("padding", 0)
 
-            layer_def = f"self.{layer_var} = nn.Conv2d({in_channels}, {out_channels}, {kernel})"
-
-            # Update shape: conv reduces spatial dimensions by (kernel-1)
-            if len(shape) == 3:
-                c, h, w = shape
-                new_h = h - kernel + 1
-                new_w = w - kernel + 1
-                new_shape = (out_channels, new_h, new_w)
-            else:
-                new_shape = (out_channels, 26, 26)  # Default assumption
-
+            layer_def = f"self.{layer_var} = nn.Conv2d({in_channels}, {out_channels}, {kernel}, stride={stride}, padding={padding})"
             return layer_def, out_channels, new_shape
 
         elif op_name == "maxpool":
-            # maxpool doesn't create a layer, but updates shape
-            kernel = op.args[0] if op.args else 2
-            if len(shape) == 3:
-                c, h, w = shape
-                new_shape = (c, h // kernel, w // kernel)
-            else:
-                new_shape = shape
             return None, in_channels, new_shape
 
         elif op_name == "flatten":
-            # flatten converts (C, H, W) to (C*H*W,)
-            if len(shape) == 3:
-                c, h, w = shape
-                flat_size = c * h * w
-                new_shape = (flat_size,)
-            else:
-                flat_size = shape[0] if shape else 128
-                new_shape = (flat_size,)
+            flat_size = new_shape[0] if new_shape else 128
             return None, flat_size, new_shape
 
         elif op_name in ("dense", "linear"):
@@ -249,6 +248,47 @@ class TorchCodeGenerator:
             p = op.args[0] if op.args else 0.5
             layer_def = f"self.{layer_var} = nn.Dropout({p})"
             return layer_def, in_channels, shape
+
+        elif op_name in ("batch_norm", "batchnorm"):
+            num_features = in_channels
+            # Simple assumption: if shape is 3D, it's BatchNorm2d, else BatchNorm1d
+            if len(shape) == 3:
+                layer_def = f"self.{layer_var} = nn.BatchNorm2d({num_features})"
+            else:
+                layer_def = f"self.{layer_var} = nn.BatchNorm1d({num_features})"
+            return layer_def, in_channels, shape
+
+        elif op_name in ("layer_norm", "layernorm"):
+            # LayerNorm needs normalized_shape
+            normalized_shape = shape
+            layer_def = f"self.{layer_var} = nn.LayerNorm({normalized_shape})"
+            return layer_def, in_channels, shape
+
+        elif op_name == "embedding":
+            num_embeddings = op.args[0] if op.args else 1000
+            embedding_dim = op.args[1] if len(op.args) > 1 else 128
+            layer_def = f"self.{layer_var} = nn.Embedding({num_embeddings}, {embedding_dim})"
+            # Input is (seq_len,), output is (seq_len, embedding_dim)
+            seq_len = shape[0] if shape else 1
+            new_shape = (seq_len, embedding_dim)
+            return layer_def, embedding_dim, new_shape
+
+        elif op_name == "multihead_attention":
+            embed_dim = op.kwargs.get("dim", in_channels)
+            num_heads = op.kwargs.get("heads", 8)
+            dropout = op.kwargs.get("dropout", 0.0)
+            layer_def = f"self.{layer_var} = nn.MultiheadAttention({embed_dim}, {num_heads}, dropout={dropout}, batch_first=True)"
+            return layer_def, in_channels, shape
+
+        elif op_name == "positional_encoding":
+            max_len = op.kwargs.get("max_len", 5000)
+            dim = in_channels
+            # We'll generate a learned positional encoding for now
+            layer_def = f"self.{layer_var} = nn.Parameter(torch.randn(1, {max_len}, {dim}))"
+            return layer_def, in_channels, shape
+
+        # For other operations, pass through
+        return None, in_channels, shape
 
         # For other operations, pass through
         return None, in_channels, shape
@@ -293,18 +333,23 @@ class TorchCodeGenerator:
 
         elif op_name == "maxpool":
             kernel = op.args[0] if op.args else 2
-            return f"F.max_pool2d({var}, {kernel})"
+            stride = op.kwargs.get("stride", kernel)
+            return f"F.max_pool2d({var}, {kernel}, stride={stride})"
 
         elif op_name == "avgpool":
             kernel = op.args[0] if op.args else 2
-            return f"F.avg_pool2d({var}, {kernel})"
+            stride = op.kwargs.get("stride", kernel)
+            return f"F.avg_pool2d({var}, {kernel}, stride={stride})"
 
         elif op_name == "flatten":
             return f"torch.flatten({var}, 1)"
 
         elif op_name == "reshape":
-            shape = op.args if op.args else [-1]
-            return f"{var}.view{tuple(shape)}"
+            shape_args = list(op.args) if op.args else [-1]
+            # Ensure batch dimension is preserved if not present
+            if len(shape_args) > 0 and shape_args[0] != -1:
+                shape_args = [-1] + shape_args
+            return f"{var}.view{tuple(shape_args)}"
 
         elif op_name == "relu":
             return f"F.relu({var})"
@@ -326,11 +371,26 @@ class TorchCodeGenerator:
             dim = op.args[0] if op.args else -1
             return f"F.softmax({var}, dim={dim})"
 
-        elif op_name == "batch_norm" or op_name == "batchnorm":
-            return f"self.{self.layer_map.get(idx, 'bn')}({var})"
+        elif op_name in ("batch_norm", "batchnorm"):
+            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
+            return f"self.{layer_var}({var})"
 
-        elif op_name == "layer_norm" or op_name == "layernorm":
-            return f"self.{self.layer_map.get(idx, 'ln')}({var})"
+        elif op_name in ("layer_norm", "layernorm"):
+            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
+            return f"self.{layer_var}({var})"
+
+        elif op_name == "embedding":
+            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
+            return f"self.{layer_var}({var})"
+
+        elif op_name == "multihead_attention":
+            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
+            # nn.MultiheadAttention returns (output, weights)
+            return f"self.{layer_var}({var}, {var}, {var})[0]"
+
+        elif op_name == "positional_encoding":
+            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
+            return f"{var} + self.{layer_var}[:, :{var}.size(1), :]"
 
         else:
             # Default: treat as function call
@@ -343,10 +403,16 @@ class TorchCodeGenerator:
 
         if activation == "relu":
             return f"F.relu({code})"
+        elif activation == "leaky_relu":
+            return f"F.leaky_relu({code}, 0.01)"
+        elif activation == "gelu":
+            return f"F.gelu({code})"
         elif activation == "sigmoid":
             return f"torch.sigmoid({code})"
         elif activation == "tanh":
             return f"torch.tanh({code})"
+        elif activation == "softmax":
+            return f"F.softmax({code}, dim=-1)"
         else:
             return code
 
@@ -379,6 +445,19 @@ class TorchCodeGenerator:
         optimizer_code = self._parse_optimizer(optimizer_spec)
         lines.append(f"    optimizer = {optimizer_code}")
 
+        # Mixed precision
+        use_amp = train.config.get("mixed_precision", False)
+        if use_amp:
+            lines.append(f"    scaler = torch.cuda.amp.GradScaler()")
+
+        # Scheduler
+        if train.scheduler:
+            scheduler_code = self._generate_scheduler(train.scheduler)
+            lines.append(f"    scheduler = {scheduler_code}")
+
+        # Gradient clipping
+        grad_clip = train.config.get("gradient_clipping", None)
+
         # Epochs
         epochs = train.config.get("epochs", 5)
 
@@ -395,15 +474,60 @@ class TorchCodeGenerator:
                 f"            data, target = data.to(device), target.to(device)",
                 f"            ",
                 f"            optimizer.zero_grad()",
-                f"            output = model(data)",
-                f"            loss = criterion(output, target)",
-                f"            loss.backward()",
-                f"            optimizer.step()",
+                f"            ",
+            ]
+        )
+
+        if use_amp:
+            lines.extend(
+                [
+                    f"            with torch.cuda.amp.autocast():",
+                    f"                output = model(data)",
+                    f"                loss = criterion(output, target)",
+                    f"            ",
+                    f"            scaler.scale(loss).backward()",
+                ]
+            )
+            if grad_clip:
+                lines.append(f"            scaler.unscale_(optimizer)")
+                lines.append(
+                    f"            torch.nn.utils.clip_grad_norm_(model.parameters(), {grad_clip})"
+                )
+            lines.append(f"            scaler.step(optimizer)")
+            lines.append(f"            scaler.update()")
+        else:
+            lines.extend(
+                [
+                    f"            output = model(data)",
+                    f"            loss = criterion(output, target)",
+                    f"            loss.backward()",
+                ]
+            )
+            if grad_clip:
+                lines.append(
+                    f"            torch.nn.utils.clip_grad_norm_(model.parameters(), {grad_clip})"
+                )
+            lines.append(f"            optimizer.step()")
+
+        lines.extend(
+            [
                 f"            ",
                 f"            running_loss += loss.item()",
                 f"            ",
                 f"            if batch_idx % 100 == 0:",
                 f"                print(f'Epoch {{epoch+1}}/{epochs}, Batch {{batch_idx}}, Loss: {{loss.item():.4f}}')",
+            ]
+        )
+
+        # Step scheduler
+        if train.scheduler:
+            if train.scheduler.name.lower() == "reduce_lr_on_plateau":
+                lines.append(f"        scheduler.step(avg_loss)")
+            else:
+                lines.append(f"        scheduler.step()")
+
+        lines.extend(
+            [
                 f"        ",
                 f"        avg_loss = running_loss / len({train.dataset_name})",
                 f"        print(f'Epoch {{epoch+1}}/{epochs} completed. Average Loss: {{avg_loss:.4f}}')",
@@ -482,6 +606,99 @@ class TorchCodeGenerator:
             'if __name__ == "__main__":',
             f"    print('Starting training: {train.model_name} on {train.dataset_name}')",
             f"    model = train_{train.model_name.lower()}()",
+            f"    print('Training completed!')",
+        ]
+        return "\n".join(lines)
+
+    def _generate_gan_training(self, train: TrainGANNode) -> str:
+        """Generate specialized GAN training function."""
+        gen = train.generator_name
+        disc = train.discriminator_name
+        lines = [
+            f"# GAN Training: {gen} and {disc} on {train.dataset_name}",
+            f"def train_gan_{gen.lower()}_{disc.lower()}():",
+            f"    # Models",
+            f"    netG = {gen}().to(device)",
+            f"    netD = {disc}().to(device)",
+            f"    ",
+            f"    # Binary Cross Entropy loss",
+            f"    criterion = nn.BCELoss()",
+            f"    ",
+            f"    # Optimizers",
+            f"    optimizerG = {self._parse_optimizer(train.config.get('generator_optimizer', 'adam(lr=2e-4, betas=(0.5, 0.999))')).replace('model.parameters()', 'netG.parameters()')}",
+            f"    optimizerD = {self._parse_optimizer(train.config.get('discriminator_optimizer', 'adam(lr=2e-4, betas=(0.5, 0.999))')).replace('model.parameters()', 'netD.parameters()')}",
+            f"    ",
+            f"    epochs = {train.config.get('epochs', 100)}",
+            f"    ",
+            f"    for epoch in range(epochs):",
+            f"        for i, (data, _) in enumerate({train.dataset_name}):",
+            f"            # 1. Update Discriminator: maximize log(D(x)) + log(1 - D(G(z)))",
+            f"            netD.zero_grad()",
+            f"            real_cpu = data.to(device)",
+            f"            batch_size = real_cpu.size(0)",
+            f"            label = torch.full((batch_size,), 1.0, dtype=torch.float, device=device)",
+            f"            ",
+            f"            output = netD(real_cpu).view(-1)",
+            f"            errD_real = criterion(output, label)",
+            f"            errD_real.backward()",
+            f"            ",
+            f"            noise = torch.randn(batch_size, {train.config.get('latent_dim', 100)}, 1, 1, device=device)",
+            f"            # Handle 1D noise if needed",
+            f"            if len(netG.config.get('input_shape', (100,))) == 1:",
+            f"                noise = noise.view(batch_size, -1)",
+            f"            ",
+            f"            fake = netG(noise)",
+            f"            label.fill_(0.0)",
+            f"            output = netD(fake.detach()).view(-1)",
+            f"            errD_fake = criterion(output, label)",
+            f"            errD_fake.backward()",
+            f"            optimizerD.step()",
+            f"            ",
+            f"            # 2. Update Generator: maximize log(D(G(z)))",
+            f"            netG.zero_grad()",
+            f"            label.fill_(1.0)",
+            f"            output = netD(fake).view(-1)",
+            f"            errG = criterion(output, label)",
+            f"            errG.backward()",
+            f"            optimizerG.step()",
+            f"            ",
+            f"            if i % 50 == 0:",
+            f"                print(f'[{{epoch}}/{{epochs}}][{{i}}/{{len({train.dataset_name})}}] Loss_D: {{errD_real.item()+errD_fake.item():.4f}} Loss_G: {{errG.item():.4f}}')",
+            f"    ",
+            f"    return netG, netD",
+        ]
+        return "\n".join(lines)
+    def _generate_scheduler(self, scheduler: LRScheduler) -> str:
+        """Generate PyTorch LR scheduler code."""
+        name = scheduler.name.lower()
+        params = scheduler.params
+        args = params.get("args", [])
+        kwargs = params.get("kwargs", {})
+
+        # Build kwargs string
+        kwargs_str = ", ".join([f"{k}={self._format_value(v)}" for k, v in kwargs.items()])
+        if args:
+            args_str = ", ".join([self._format_value(a) for a in args])
+            combined = f"{args_str}, {kwargs_str}" if kwargs_str else args_str
+        else:
+            combined = kwargs_str
+
+        # Map name to PyTorch scheduler
+        sched_class = {
+            "step_lr": "optim.lr_scheduler.StepLR",
+            "exponential_lr": "optim.lr_scheduler.ExponentialLR",
+            "cosine_annealing": "optim.lr_scheduler.CosineAnnealingLR",
+            "reduce_lr_on_plateau": "optim.lr_scheduler.ReduceLROnPlateau",
+        }.get(name, "optim.lr_scheduler.StepLR")
+
+        return f"{sched_class}(optimizer, {combined})"
+
+    def _generate_gan_training_main(self, train: TrainGANNode) -> str:
+        """Generate main execution block for GAN."""
+        lines = [
+            'if __name__ == "__main__":',
+            f"    print('Starting GAN training...')",
+            f"    netG, netD = train_gan_{train.generator_name.lower()}_{train.discriminator_name.lower()}()",
             f"    print('Training completed!')",
         ]
         return "\n".join(lines)

@@ -1,0 +1,18 @@
+model TestPowerUps:
+    input_shape = (10,)
+    def forward(x):
+        x -> dense(64).relu
+          -> dense(10)
+
+dataset mock_data:
+    from torchvision.datasets.FakeData
+    size = 100
+    batch = 32
+
+train TestPowerUps on mock_data:
+    epochs = 2
+    loss = cross_entropy
+    optimizer = adam(lr=1e-3)
+    mixed_precision = True
+    gradient_clipping = 1.0
+    scheduler = step_lr(step_size=1, gamma=0.1)

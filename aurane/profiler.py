@@ -18,7 +18,7 @@ from .ast import (
     LayerOperation,
     ForwardBlock,
 )
-
+from .shapes import infer_output_shape, calculate_params, to_int
 
 @dataclass
 class LayerProfile:
@@ -125,9 +125,9 @@ class ModelProfiler:
 
         for idx, op in enumerate(self.model.forward_block.operations):
             # Calculate layer metrics
-            output_shape = self._calculate_output_shape(op, current_shape)
+            output_shape = infer_output_shape(op, current_shape)
             flops = self._calculate_flops(op, current_shape, output_shape)
-            params = self._calculate_params(op, current_shape)
+            params = calculate_params(op, current_shape)
             memory = self._calculate_memory(output_shape, batch_size)
 
             layer_profile = LayerProfile(
@@ -156,69 +156,8 @@ class ModelProfiler:
         return self.profile
 
     def _calculate_output_shape(self, op: LayerOperation, input_shape: tuple) -> tuple:
-        """Calculate output shape for an operation."""
-        op_name = op.operation.lower()
-
-        def to_int(val, default: int) -> int:
-            if isinstance(val, int):
-                return val
-            if isinstance(val, float):
-                return int(val)
-            if isinstance(val, str):
-                try:
-                    return int(val)
-                except ValueError:
-                    return default
-            return default
-
-        if op_name == "conv2d":
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                out_channels = to_int(op.args[0], 32) if op.args else 32
-                kernel = to_int(op.kwargs.get("kernel", 3), 3)
-                stride = to_int(op.kwargs.get("stride", 1), 1)
-                padding = to_int(op.kwargs.get("padding", 0), 0)
-
-                h_out = (h + 2 * padding - kernel) // stride + 1
-                w_out = (w + 2 * padding - kernel) // stride + 1
-                return (out_channels, h_out, w_out)
-            return input_shape
-
-        elif op_name in ("maxpool", "avgpool"):
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                kernel = to_int(op.args[0], 2) if op.args else 2
-                stride = to_int(op.kwargs.get("stride", kernel), kernel)
-                return (c, max(1, h // stride), max(1, w // stride))
-            return input_shape
-
-        elif op_name == "flatten":
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                return (c * h * w,)
-            return input_shape
-
-        elif op_name in ("dense", "linear"):
-            out_features = to_int(op.args[0], 128) if op.args else 128
-            return (out_features,)
-
-        elif op_name in ("dropout", "batchnorm", "layer_norm"):
-            return input_shape
-
-        elif op_name == "embedding":
-            if len(op.args) >= 2:
-                embed_dim = to_int(op.args[1], 256)
-                seq_len = to_int(input_shape[0], 1) if input_shape else 1
-                return (seq_len, embed_dim)
-            return input_shape
-
-        elif op_name == "global_avg_pool":
-            if len(input_shape) == 3:
-                c, h, w = input_shape
-                return (c,)
-            return input_shape
-
-        return input_shape
+        """Infer output shape for an operation."""
+        return infer_output_shape(op, input_shape)
 
     def _calculate_flops(self, op: LayerOperation, input_shape: tuple, output_shape: tuple) -> int:
         """Calculate FLOPs for an operation."""
@@ -281,51 +220,7 @@ class ModelProfiler:
 
     def _calculate_params(self, op: LayerOperation, input_shape: tuple) -> int:
         """Calculate parameters for an operation."""
-        op_name = op.operation.lower()
-
-        def to_int(val, default: int) -> int:
-            if isinstance(val, int):
-                return val
-            if isinstance(val, float):
-                return int(val)
-            return default
-
-        if op_name == "conv2d":
-            if len(input_shape) == 3:
-                in_channels = input_shape[0]
-                out_channels = to_int(op.args[0], 32) if op.args else 32
-                kernel = to_int(op.kwargs.get("kernel", 3), 3)
-                return kernel * kernel * in_channels * out_channels + out_channels
-            return 0
-
-        elif op_name in ("dense", "linear"):
-            in_features = input_shape[0] if input_shape else 128
-            out_features = to_int(op.args[0], 128) if op.args else 128
-            return in_features * out_features + out_features
-
-        elif op_name == "batchnorm":
-            if len(input_shape) >= 1:
-                return 2 * input_shape[0]  # gamma and beta
-            return 0
-
-        elif op_name == "layer_norm":
-            if len(input_shape) >= 1:
-                return 2 * input_shape[-1]
-            return 0
-
-        elif op_name == "embedding":
-            if len(op.args) >= 2:
-                vocab_size = to_int(op.args[0], 0)
-                embed_dim = to_int(op.args[1], 0)
-                return vocab_size * embed_dim
-            return 0
-
-        elif op_name == "multihead_attention":
-            dim = to_int(op.kwargs.get("dim", 512), 512)
-            # Q, K, V projections + output projection
-            return 4 * dim * dim + 4 * dim
-
-        return 0
+        return calculate_params(op, input_shape)
 
     def _calculate_memory(self, output_shape: tuple, batch_size: int) -> int:
         """Calculate memory for activations in bytes."""

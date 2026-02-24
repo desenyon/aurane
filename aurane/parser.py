@@ -15,8 +15,12 @@ from .ast import (
     DatasetNode,
     ModelNode,
     TrainNode,
+    TrainGANNode,
     ForwardBlock,
     LayerOperation,
+    Metric,
+    Callback,
+    LRScheduler,
 )
 
 
@@ -36,6 +40,7 @@ class Parser:
     def __init__(self, source: str):
         self.lines = source.split("\n")
         self.current_line = 0
+        self.errors = []
 
     def parse(self) -> AuraneProgram:
         """Parse the entire Aurane program and return an AST."""
@@ -51,18 +56,33 @@ class Parser:
 
             # Check for no indentation (top-level construct)
             if line[0] not in (" ", "\t"):
-                if line.startswith("use "):
-                    program.uses.append(self._parse_use(line))
-                elif line.startswith("experiment "):
-                    program.experiments.append(self._parse_experiment())
-                elif line.startswith("dataset "):
-                    program.datasets.append(self._parse_dataset())
-                elif line.startswith("model "):
-                    program.models.append(self._parse_model())
-                elif line.startswith("train "):
-                    program.trains.append(self._parse_train())
-                else:
+                try:
+                    if line.startswith("use "):
+                        program.uses.append(self._parse_use(line))
+                    elif line.startswith("experiment "):
+                        program.experiments.append(self._parse_experiment())
+                    elif line.startswith("dataset "):
+                        program.datasets.append(self._parse_dataset())
+                    elif line.startswith("model "):
+                        program.models.append(self._parse_model())
+                    elif line.startswith("train "):
+                        program.trains.append(self._parse_train())
+                    elif line.startswith("train_gan "):
+                        program.train_gans.append(self._parse_train_gan())
+                    elif "=" in line:
+                        program.variables.append(self._parse_global_variable())
+                    else:
+                        self.errors.append((self.current_line + 1, f"Unknown top-level statement: {line}"))
+                        self.current_line += 1
+                except Exception as e:
+                    self.errors.append((self.current_line + 1, str(e)))
+                    # Try to skip to next top-level block
                     self.current_line += 1
+                    while self.current_line < len(self.lines):
+                        next_line = self.lines[self.current_line].rstrip()
+                        if next_line and next_line[0] not in (" ", "\t"):
+                            break
+                        self.current_line += 1
             else:
                 self.current_line += 1
 
@@ -78,7 +98,7 @@ class Parser:
         module = parts[0].strip()
         alias = parts[1].strip() if len(parts) > 1 else None
 
-        return UseStatement(module=module, alias=alias)
+        return UseStatement(module=module, alias=alias, line=self.current_line)
 
     def _parse_experiment(self) -> ExperimentNode:
         """Parse an 'experiment' block."""
@@ -89,11 +109,12 @@ class Parser:
             raise ParseError(f"Invalid experiment syntax at line {self.current_line + 1}")
 
         name = match.group(1)
+        start_line = self.current_line + 1
         self.current_line += 1
 
         config = self._parse_config_block()
 
-        return ExperimentNode(name=name, config=config)
+        return ExperimentNode(name=name, config=config, line=start_line)
 
     def _parse_dataset(self) -> DatasetNode:
         """Parse a 'dataset' block."""
@@ -104,6 +125,7 @@ class Parser:
             raise ParseError(f"Invalid dataset syntax at line {self.current_line + 1}")
 
         name = match.group(1)
+        start_line = self.current_line + 1
         self.current_line += 1
 
         config = self._parse_config_block()
@@ -111,7 +133,7 @@ class Parser:
         # Extract 'from' clause if present
         source = config.pop("from", None)
 
-        return DatasetNode(name=name, source=source, config=config)
+        return DatasetNode(name=name, source=source, config=config, line=start_line)
 
     def _parse_model(self) -> ModelNode:
         """Parse a 'model' block."""
@@ -122,6 +144,7 @@ class Parser:
             raise ParseError(f"Invalid model syntax at line {self.current_line + 1}")
 
         name = match.group(1)
+        start_line = self.current_line + 1
         self.current_line += 1
 
         config = {}
@@ -142,7 +165,9 @@ class Parser:
 
             if current_indent == indent:
                 if line.strip().startswith("def forward("):
+                    forward_line = self.current_line + 1
                     forward_block = self._parse_forward_block()
+                    forward_block.line = forward_line
                     # After parsing forward block, we're done
                     break
                 else:
@@ -157,7 +182,7 @@ class Parser:
             else:
                 self.current_line += 1
 
-        return ModelNode(name=name, config=config, forward_block=forward_block)
+        return ModelNode(name=name, config=config, forward_block=forward_block, line=start_line)
 
     def _parse_forward_block(self) -> ForwardBlock:
         """Parse a 'def forward(x):' block."""
@@ -179,7 +204,9 @@ class Parser:
         operations = []
         indent = self._get_indent_level(self.current_line)
 
-        chain_lines = []
+        # Get the forward parameter name from the previous model parsing state if possible
+        # but for now we just look for common "x ->" or whatever is at the start
+        
         while self.current_line < len(self.lines):
             line = self.lines[self.current_line].rstrip()
 
@@ -191,28 +218,24 @@ class Parser:
             if current_indent < indent:
                 break
 
-            # Accept lines at or greater than the base indent (for continuation)
-            if current_indent >= indent:
-                chain_lines.append(line.strip())
-                self.current_line += 1
-            else:
-                self.current_line += 1
-
-        # Combine all chain lines and split by ->
-        full_chain = " ".join(chain_lines)
-
-        # Remove leading 'x ->' if present
-        full_chain = re.sub(r"^\w+\s*->\s*", "", full_chain)
-
-        # Split by -> and parse each operation
-        parts = [p.strip() for p in full_chain.split("->") if p.strip()]
-
-        for part in parts:
-            operations.extend(self._parse_operation(part))
+            stripped = line.strip()
+            
+            # Remove any leading 'param ->' if present on this line
+            # We look for a word followed by ->
+            stripped = re.sub(r"^\w+\s*->\s*", "", stripped)
+            
+            # Split by -> and parse each operation
+            # Note: we need to be careful with -> inside strings if we ever support them, 
+            # but for now simple split is better than before
+            parts = [p.strip() for p in stripped.split("->") if p.strip()]
+            for part in parts:
+                operations.extend(self._parse_operation(part, self.current_line + 1))
+            
+            self.current_line += 1
 
         return operations
 
-    def _parse_operation(self, text: str) -> List[LayerOperation]:
+    def _parse_operation(self, text: str, line_num: int) -> List[LayerOperation]:
         """
         Parse a single operation or chained operations with activations.
 
@@ -266,7 +289,7 @@ class Parser:
 
                 args, kwargs = self._parse_arguments(args_str)
 
-                operations.append(LayerOperation(operation=op_name, args=args, kwargs=kwargs))
+                operations.append(LayerOperation(operation=op_name, args=args, kwargs=kwargs, line=line_num))
 
         return operations
 
@@ -280,11 +303,68 @@ class Parser:
 
         model_name = match.group(1)
         dataset_name = match.group(2)
+        start_line = self.current_line + 1
         self.current_line += 1
 
         config = self._parse_config_block()
 
-        return TrainNode(model_name=model_name, dataset_name=dataset_name, config=config)
+        # Post-process config to extract specific AST nodes
+        metrics = []
+        if "metrics" in config:
+            metric_names = config.pop("metrics")
+            if isinstance(metric_names, list):
+                metrics = [Metric(name=str(m), params={}, line=start_line) for m in metric_names]
+
+        callbacks = []
+        if "callbacks" in config:
+            callback_names = config.pop("callbacks")
+            if isinstance(callback_names, list):
+                callbacks = [Callback(name=str(c), params={}, line=start_line) for c in callback_names]
+
+        scheduler = None
+        if "scheduler" in config:
+            sched_val = config.pop("scheduler")
+            if isinstance(sched_val, str) and "(" in sched_val:
+                name = sched_val.split("(", 1)[0].strip()
+                arg_str = sched_val.split("(", 1)[1].rstrip(")")
+                args, kwargs = self._parse_arguments(arg_str)
+                # Keep both positional and keyword arguments for scheduler
+                params = {"args": args, "kwargs": kwargs}
+                scheduler = LRScheduler(name=name, params=params, line=start_line)
+
+        return TrainNode(
+            model_name=model_name,
+            dataset_name=dataset_name,
+            config=config,
+            metrics=metrics,
+            callbacks=callbacks,
+            scheduler=scheduler,
+            line=start_line,
+        )
+
+    def _parse_train_gan(self) -> TrainGANNode:
+        """Parse a 'train_gan' block."""
+        line = self.lines[self.current_line]
+        # train_gan Generator and Discriminator on mnist_images:
+        match = re.match(r"train_gan\s+(\w+)\s+and\s+(\w+)\s+on\s+(\w+):", line)
+        if not match:
+            raise ParseError(f"Invalid train_gan syntax at line {self.current_line + 1}")
+
+        gen_name = match.group(1)
+        disc_name = match.group(2)
+        dataset_name = match.group(3)
+        start_line = self.current_line + 1
+        self.current_line += 1
+
+        config = self._parse_config_block()
+
+        return TrainGANNode(
+            generator_name=gen_name,
+            discriminator_name=disc_name,
+            dataset_name=dataset_name,
+            config=config,
+            line=start_line,
+        )
 
     def _parse_config_block(self) -> Dict[str, Any]:
         """Parse a configuration block (key = value pairs)."""
@@ -396,11 +476,38 @@ class Parser:
         if not args_str.strip():
             return args, kwargs
 
-        # Simple parsing: split by comma (doesn't handle nested calls well, but OK for MVP)
-        parts = [p.strip() for p in args_str.split(",")]
+        # Robust parsing: split by comma but respect nested parentheses/brackets
+        parts = []
+        current = ""
+        paren_depth = 0
+        bracket_depth = 0
+        
+        for char in args_str:
+            if char == "(":
+                paren_depth += 1
+                current += char
+            elif char == ")":
+                paren_depth -= 1
+                current += char
+            elif char == "[":
+                bracket_depth += 1
+                current += char
+            elif char == "]":
+                bracket_depth -= 1
+                current += char
+            elif char == "," and paren_depth == 0 and bracket_depth == 0:
+                parts.append(current.strip())
+                current = ""
+            else:
+                current += char
+        
+        if current:
+            parts.append(current.strip())
 
         for part in parts:
-            if "=" in part:
+            if not part:
+                continue
+            if "=" in part and "(" not in part.split("=")[0]: # Simple check for kwarg
                 key, value_str = part.split("=", 1)
                 kwargs[key.strip()] = self._parse_value(value_str.strip())
             else:
