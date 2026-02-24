@@ -47,6 +47,7 @@ def compile_file(input_path: str, output_path: str, backend: str = "torch") -> N
     except Exception as e:
         raise CompilationError(f"Compilation failed: {e}")
 
+
     # Write output
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -59,13 +60,14 @@ def compile_file(input_path: str, output_path: str, backend: str = "torch") -> N
     print(f"Successfully compiled {input_path} -> {output_path}")
 
 
-def compile_source(source: str, backend: str = "torch") -> str:
+def compile_source(source: str, backend: str = "torch", disable_cache: bool = False) -> str:
     """
     Compile Aurane source code to Python.
 
     Args:
         source: The Aurane source code as a string.
         backend: Code generation backend to use (default: "torch").
+        disable_cache: If True, do not read from or write to the cache.
 
     Returns:
         Generated Python source code as a string.
@@ -73,6 +75,18 @@ def compile_source(source: str, backend: str = "torch") -> str:
     Raises:
         CompilationError: If compilation fails.
     """
+    import hashlib
+    import os
+
+    # Attempt to resolve from cache
+    if not disable_cache:
+        source_hash = hashlib.md5(source.encode("utf-8")).hexdigest()
+        cache_dir = Path(".aurane_cache") / backend
+        cache_file = cache_dir / f"{source_hash}.py"
+
+        if cache_file.exists():
+            return cache_file.read_text(encoding="utf-8")
+
     # Parse source to AST
     try:
         ast = parse_aurane(source)
@@ -82,20 +96,31 @@ def compile_source(source: str, backend: str = "torch") -> str:
     # Generate code based on backend
     if backend == "torch":
         try:
-            return generate_torch_code(ast)
+            python_code = generate_torch_code(ast)
         except Exception as e:
             raise CompilationError(f"Code generation error: {e}")
     else:
         raise CompilationError(f"Unsupported backend: {backend}")
 
+    # Write to cache
+    if not disable_cache:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(python_code, encoding="utf-8")
+        except Exception:
+            pass  # Non-fatal if cache write fails
 
-def compile_to_temp(source: str, backend: str = "torch") -> Path:
+    return python_code
+
+
+def compile_to_temp(source: str, backend: str = "torch", disable_cache: bool = False) -> Path:
     """
     Compile Aurane source to a temporary Python file.
 
     Args:
         source: The Aurane source code as a string.
         backend: Code generation backend to use (default: "torch").
+        disable_cache: If True, bypass cache.
 
     Returns:
         Path to the temporary Python file.
@@ -105,7 +130,7 @@ def compile_to_temp(source: str, backend: str = "torch") -> Path:
     """
     import tempfile
 
-    python_code = compile_source(source, backend=backend)
+    python_code = compile_source(source, backend=backend, disable_cache=disable_cache)
 
     # Create temporary file
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
