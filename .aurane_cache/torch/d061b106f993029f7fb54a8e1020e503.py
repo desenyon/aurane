@@ -1,0 +1,13 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+import torch
+import torchvision
+import torchvision.transforms as transforms
+
+# Model: Net
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
