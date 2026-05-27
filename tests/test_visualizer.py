@@ -8,6 +8,8 @@ from aurane.visualizer import (
     calculate_output_shape,
     calculate_parameters,
     print_model_summary,
+    render_model_architecture_dot,
+    render_model_architecture_mermaid,
     visualize_model_architecture,
 )
 from aurane.ast import LayerOperation, ForwardBlock, ModelNode
@@ -211,6 +213,27 @@ class TestVisualizeArchitecture:
 """
         program = parse_aurane(source)
         visualize_model_architecture(program.models[0])
+
+    def test_renderers_use_input_shape_for_params(self):
+        """Test rendered parameter labels use layer input shapes."""
+        source = """model TinyNet:
+    input_shape = (3, 32, 32)
+    def forward(x):
+        x -> conv2d(16, kernel=3).relu
+          -> maxpool(2)
+          -> flatten()
+          -> dense(64).relu
+          -> dense(10)
+"""
+        model = parse_aurane(source).models[0]
+
+        mermaid = render_model_architecture_mermaid(model)
+        dot = render_model_architecture_dot(model)
+
+        assert "448 params" in mermaid
+        assert "230,464 params" in mermaid
+        assert "448 params" in dot
+        assert "230,464 params" in dot
 
 
 class TestShapeInference:

@@ -16,6 +16,8 @@ from .ast import (
     TrainGANNode,
     LayerOperation,
     ForwardBlock,
+    ForwardGraphBlock,
+    GraphOp,
     LRScheduler,
 )
 from .shapes import infer_output_shape
@@ -27,8 +29,8 @@ class TorchCodeGenerator:
     def __init__(self, program: AuraneProgram):
         self.program = program
         self.indent_level = 0
-        self.layer_counter = {}  # Track layer counts for naming
-        self.layer_map = {}  # Map operation index to layer variable name
+        self.layer_counter: Dict[str, int] = {}  # Track layer counts for naming
+        self.layer_map: Dict[int, str] = {}  # Map operation index to layer variable name
 
     def generate(self) -> str:
         """Generate complete Python code from the AST."""
@@ -169,17 +171,25 @@ class TorchCodeGenerator:
 
         # Parse forward block to determine layers
         if model.forward_block:
-            # Infer input channels from input_shape if available
             input_shape = model.config.get("input_shape", (1, 28, 28))
-            layer_defs = self._generate_layer_definitions(model.forward_block, input_shape)
-            init_lines.extend([f"        {line}" for line in layer_defs])
+            if isinstance(model.forward_block, ForwardBlock):
+                layer_defs = self._generate_layer_definitions(model.forward_block, input_shape)
+                init_lines.extend([f"        {line}" for line in layer_defs])
+            elif isinstance(model.forward_block, ForwardGraphBlock):
+                layer_defs = self._generate_layer_definitions_graph(
+                    model.forward_block, input_shape
+                )
+                init_lines.extend([f"        {line}" for line in layer_defs])
 
         lines.extend(init_lines)
         lines.append("")
 
         # forward method
         if model.forward_block:
-            forward_lines = self._generate_forward_method(model.forward_block)
+            if isinstance(model.forward_block, ForwardBlock):
+                forward_lines = self._generate_forward_method(model.forward_block)
+            else:
+                forward_lines = self._generate_forward_method_graph(model.forward_block)
             lines.extend([f"    {line}" if line else "" for line in forward_lines])
 
         return "\n".join(lines)
@@ -309,6 +319,120 @@ class TorchCodeGenerator:
 
         return lines
 
+    def _generate_layer_definitions_graph(
+        self, forward_block: ForwardGraphBlock, input_shape: tuple
+    ) -> List[str]:
+        """Generate layer definitions for graph-based forward definitions."""
+        layers: List[str] = []
+        self.layer_counter = {}
+        self.layer_map = {}
+
+        # Track inferred shapes for graph wiring.
+        if isinstance(input_shape, list):
+            current_shape: tuple = tuple(input_shape)
+        else:
+            current_shape = input_shape
+
+        shape_env: Dict[str, tuple] = {forward_block.parameter: current_shape}
+
+        for idx, node in enumerate(forward_block.nodes):
+            op = node.operation
+            if op is None:
+                continue
+            op_name = op.operation.lower()
+            inputs = node.inputs
+
+            # Infer output shape for wiring and parameter initialization.
+            if op_name == "add":
+                out_shape = shape_env.get(inputs[0], current_shape)
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                shapes = [shape_env.get(v, current_shape) for v in inputs]
+                if shapes and all(len(s) == len(shapes[0]) for s in shapes):
+                    out_dims = list(shapes[0])
+                    dim_sum = 0
+                    for s in shapes:
+                        d = s[dim] if len(s) > dim else -1
+                        if d == -1 or dim_sum == -1:
+                            dim_sum = -1
+                            break
+                        dim_sum += d
+                    out_dims[dim] = dim_sum
+                    out_shape = tuple(out_dims)
+                else:
+                    out_shape = shapes[0] if shapes else current_shape
+            else:
+                in_shape = shape_env.get(inputs[0], current_shape)
+                layer_def, _, inferred_shape = self._operation_to_layer_def_with_shape(
+                    op,
+                    idx,
+                    in_channels=in_shape[0] if len(in_shape) >= 1 else 1,
+                    shape=in_shape,
+                )
+                out_shape = inferred_shape
+                if layer_def:
+                    layers.append(layer_def)
+                shape_env[node.target] = out_shape
+                continue
+
+            # For ops without parameters, we still need to update shape env.
+            if op_name not in ("add", "concat"):
+                # handled above
+                pass
+            shape_env[node.target] = out_shape
+
+            # add/concat require no layer instantiation.
+
+        return layers
+
+    def _generate_forward_method_graph(self, forward_block: ForwardGraphBlock) -> List[str]:
+        """Generate a forward method from a graph-based forward definition."""
+        lines: List[str] = [f"def forward(self, {forward_block.parameter}):"]
+
+        shape_env: Dict[str, tuple] = {}
+        # Use parameter tensor directly; intermediate tensors are assigned by name.
+        # We do not generate shape-based logic in forward; it is only used for init lowering.
+        for idx, node in enumerate(forward_block.nodes):
+            op = node.operation
+            if op is None:
+                continue
+            op_name = op.operation.lower()
+            inputs = node.inputs
+
+            if op_name == "add":
+                if len(inputs) < 2:
+                    raise ValueError("add(...) requires at least two inputs")
+                expr = f"({inputs[0]} + {inputs[1]})"
+                if op.activation:
+                    if op.activation.lower() == "residual":
+                        expr = f"({expr} + {inputs[0]})"
+                    else:
+                        expr = self._apply_activation(expr, op.activation)
+                lines.append(f"    {node.target} = {expr}")
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                expr = f"torch.cat([{', '.join(inputs)}], dim={dim})"
+                if op.activation:
+                    if op.activation.lower() == "residual":
+                        expr = f"({expr} + {inputs[0]})"
+                    else:
+                        expr = self._apply_activation(expr, op.activation)
+                lines.append(f"    {node.target} = {expr}")
+            else:
+                if not inputs:
+                    raise ValueError(f"Graph op '{op.operation}' missing input tensor")
+                input_var = inputs[0]
+                op_code = self._operation_to_forward_code(op, input_var, idx)
+                lines.append(f"    {node.target} = {op_code}")
+
+        # Determine output.
+        output_var = forward_block.output_var or (
+            forward_block.nodes[-1].target if forward_block.nodes else forward_block.parameter
+        )
+        lines.append(f"    return {output_var}")
+
+        return lines
+
     def _operation_to_forward_code(self, op: LayerOperation, var: str, idx: int) -> str:
         """Convert an operation to forward pass code."""
         op_name = op.operation.lower()
@@ -317,6 +441,8 @@ class TorchCodeGenerator:
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
             code = f"self.{layer_var}({var})"
             if op.activation:
+                if op.activation.lower() == "residual":
+                    return f"({code} + {var})"
                 code = self._apply_activation(code, op.activation)
             return code
 
@@ -324,6 +450,8 @@ class TorchCodeGenerator:
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
             code = f"self.{layer_var}({var})"
             if op.activation:
+                if op.activation.lower() == "residual":
+                    return f"({code} + {var})"
                 code = self._apply_activation(code, op.activation)
             return code
 
@@ -373,20 +501,32 @@ class TorchCodeGenerator:
 
         elif op_name in ("batch_norm", "batchnorm"):
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            return f"self.{layer_var}({var})"
+            code = f"self.{layer_var}({var})"
+            if op.activation and op.activation.lower() == "residual":
+                return f"({code} + {var})"
+            return code
 
         elif op_name in ("layer_norm", "layernorm"):
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            return f"self.{layer_var}({var})"
+            code = f"self.{layer_var}({var})"
+            if op.activation and op.activation.lower() == "residual":
+                return f"({code} + {var})"
+            return code
 
         elif op_name == "embedding":
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            return f"self.{layer_var}({var})"
+            code = f"self.{layer_var}({var})"
+            if op.activation and op.activation.lower() == "residual":
+                return f"({code} + {var})"
+            return code
 
         elif op_name == "multihead_attention":
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
             # nn.MultiheadAttention returns (output, weights)
-            return f"self.{layer_var}({var}, {var}, {var})[0]"
+            code = f"self.{layer_var}({var}, {var}, {var})[0]"
+            if op.activation and op.activation.lower() == "residual":
+                return f"({code} + {var})"
+            return code
 
         elif op_name == "positional_encoding":
             layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))

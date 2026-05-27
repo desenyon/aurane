@@ -6,6 +6,7 @@ import sys
 import argparse
 from .ui import print_banner, console
 from .commands.compile import cmd_compile
+from .commands.check import cmd_check
 from .commands.inspect import cmd_inspect
 from .commands.visualize import cmd_visualize
 from .commands.profile import cmd_profile
@@ -17,6 +18,7 @@ from .commands.watch import cmd_watch
 from .commands.interactive import cmd_interactive
 from .commands.init import cmd_init
 from .commands.clean import cmd_clean
+from .commands.ir import cmd_ir
 
 
 def main():
@@ -25,14 +27,33 @@ def main():
         prog="aurane", description="Aurane ML DSL - Modern, high-performance ML transpiler"
     )
 
-    parser.add_argument("--version", action="version", version="Aurane 1.0.0")
+    try:
+        from .. import __version__
+
+        version_str = f"Aurane {__version__}"
+    except Exception:
+        version_str = "Aurane 2.0.0"
+
+    parser.add_argument("--version", action="version", version=version_str)
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Compile command
     compile_parser = subparsers.add_parser("compile", help="Compile .aur to Python")
     compile_parser.add_argument("input", help="Input .aur file")
-    compile_parser.add_argument("output", help="Output .py file")
+    compile_parser.add_argument(
+        "output",
+        nargs="?",
+        default=None,
+        help="Optional output .py file (otherwise compile to stdout)",
+    )
+    compile_parser.add_argument(
+        "-o",
+        "--output",
+        dest="output_override",
+        default=None,
+        help="Optional output .py file (overrides positional output)",
+    )
     compile_parser.add_argument(
         "--backend", default="torch", choices=["torch"], help="Transpiler backend"
     )
@@ -40,22 +61,82 @@ def main():
         "--analyze", action="store_true", help="Analyze model during compilation"
     )
     compile_parser.add_argument("--validate", action="store_true", help="Perform static analysis")
+    compile_parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Optimize the model AST before code generation",
+    )
+    compile_parser.add_argument(
+        "--opt-level",
+        type=int,
+        default=1,
+        choices=[0, 1, 2],
+        help="Optimization level used with --optimize",
+    )
     compile_parser.add_argument("--format", action="store_true", help="Format output using black")
     compile_parser.add_argument("--show-ast", action="store_true", help="Show AST tree")
     compile_parser.add_argument("--diff", action="store_true", help="Show code comparison")
+    compile_parser.add_argument("--quiet", action="store_true", help="Reduce CLI output")
+    compile_parser.add_argument(
+        "--verbose", action="store_true", help="Increase CLI output verbosity"
+    )
 
     # Inspect command
     inspect_parser = subparsers.add_parser("inspect", help="Inspect model structure")
     inspect_parser.add_argument("input", help="Input .aur file")
     inspect_parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose details")
+    inspect_parser.add_argument("--stats", action="store_true", help="Show program-level counts")
+    inspect_parser.add_argument("--export", default=None, help="Export parsed AST to a JSON file")
+
+    # Check command
+    check_parser = subparsers.add_parser("check", help="Run semantic/type checks on .aur files")
+    check_parser.add_argument("input", help="Input .aur file")
+    check_parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help="Run semantic analysis (best-practices + schema validation)",
+    )
+    check_parser.add_argument(
+        "--types",
+        action="store_true",
+        help="Run type/shape checking",
+    )
+    check_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    check_parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose details")
 
     # Visualize command
     visualize_parser = subparsers.add_parser("visualize", help="Visualize model architecture")
     visualize_parser.add_argument("input", help="Input .aur file")
+    visualize_parser.add_argument(
+        "--format",
+        default="rich",
+        choices=["rich", "mermaid", "dot"],
+        help="Visualization output format",
+    )
+    visualize_parser.add_argument(
+        "--output", default=None, help="Write output to a file (optional)"
+    )
 
     # Profile command
     profile_parser = subparsers.add_parser("profile", help="Profile model performance")
     profile_parser.add_argument("input", help="Input .aur file")
+    profile_parser.add_argument(
+        "--batch-size", type=int, default=1, help="Batch size for memory estimates"
+    )
+    profile_parser.add_argument(
+        "--detailed", action="store_true", help="Show layer-by-layer profiling details"
+    )
+    profile_parser.add_argument(
+        "--format", default="text", choices=["text"], help="Output formatting"
+    )
+
+    # IR command
+    ir_parser = subparsers.add_parser("ir", help="Dump lowered IR for models")
+    ir_parser.add_argument("input", help="Input .aur file")
+    ir_parser.add_argument("--model", default=None, help="Only dump IR for a single model")
+    ir_parser.add_argument(
+        "--format", default="json", choices=["json", "text"], help="IR output format"
+    )
 
     # Run command
     run_parser = subparsers.add_parser("run", help="Compile and run immediately")
@@ -99,6 +180,9 @@ def main():
     watch_parser.add_argument(
         "--backend", default="torch", choices=["torch"], help="Transpiler backend"
     )
+    watch_parser.add_argument(
+        "--analyze", action="store_true", help="Analyze model on each compile"
+    )
 
     # Interactive command
     subparsers.add_parser("interactive", help="Start interactive REPL")
@@ -127,12 +211,16 @@ def main():
 
     if args.command == "compile":
         return cmd_compile(args)
+    elif args.command == "check":
+        return cmd_check(args)
     elif args.command == "inspect":
         return cmd_inspect(args)
     elif args.command == "visualize":
         return cmd_visualize(args)
     elif args.command == "profile":
         return cmd_profile(args)
+    elif args.command == "ir":
+        return cmd_ir(args)
     elif args.command == "run":
         return cmd_run(args)
     elif args.command == "format":
@@ -162,6 +250,7 @@ def main():
             table.add_row("[bold]Core[/bold]", "")
             table.add_row("init", "Scaffold a new Aurane project")
             table.add_row("compile", "Compile .aur to Python")
+            table.add_row("check", "Run semantic/type checks on .aur")
             table.add_row("run", "Compile and run immediately")
             table.add_row("watch", "Watch file and recompile")
             table.add_row("interactive", "Start interactive REPL")
@@ -171,6 +260,7 @@ def main():
             table.add_row("inspect", "Inspect model structure")
             table.add_row("visualize", "Visualize model architecture")
             table.add_row("profile", "Profile model performance")
+            table.add_row("ir", "Dump lowered IR for models")
             table.add_row("benchmark", "Benchmark compilation time")
 
             table.add_row("", "")

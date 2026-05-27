@@ -6,7 +6,7 @@ This module implements a simple indentation-based parser that converts
 """
 
 import re
-from typing import List, Tuple, Any, Optional, Dict
+from typing import List, Tuple, Any, Optional, Dict, Union
 
 from .ast import (
     AuraneProgram,
@@ -17,7 +17,10 @@ from .ast import (
     TrainNode,
     TrainGANNode,
     ForwardBlock,
+    ForwardGraphBlock,
+    GraphOp,
     LayerOperation,
+    Variable,
     Metric,
     Callback,
     LRScheduler,
@@ -40,7 +43,7 @@ class Parser:
     def __init__(self, source: str):
         self.lines = source.split("\n")
         self.current_line = 0
-        self.errors = []
+        self.errors: List[Tuple[int, str]] = []
 
     def parse(self) -> AuraneProgram:
         """Parse the entire Aurane program and return an AST."""
@@ -186,7 +189,7 @@ class Parser:
 
         return ModelNode(name=name, config=config, forward_block=forward_block, line=start_line)
 
-    def _parse_forward_block(self) -> ForwardBlock:
+    def _parse_forward_block(self) -> Union[ForwardBlock, ForwardGraphBlock]:
         """Parse a 'def forward(x):' block."""
         line = self.lines[self.current_line]
         # def forward(x):
@@ -196,14 +199,153 @@ class Parser:
 
         param = match.group(1)
         self.current_line += 1
+        # Detect forward syntax style.
+        # Sequential (v1) uses lines like: `x -> dense(10)`
+        # Graph (v2) uses assignments like: `h1 = dense(x, 64).relu` and optional `return out`
+        block_indent = self._get_indent_level(self.current_line)
+        probe_idx = self.current_line
+        probe_line: Optional[str] = None
+        while probe_idx < len(self.lines):
+            candidate = self.lines[probe_idx].rstrip()
+            if not candidate or candidate.lstrip().startswith("#"):
+                probe_idx += 1
+                continue
+            if self._get_indent_level(probe_idx) < block_indent:
+                break
+            if self._get_indent_level(probe_idx) == block_indent:
+                probe_line = candidate.strip()
+                break
+            probe_idx += 1
+
+        if probe_line and (probe_line.startswith("return ") or re.match(r"^\w+\s*=", probe_line)):
+            graph_block = self._parse_graph_forward_block(parameter=param)
+            return graph_block
 
         operations = self._parse_layer_chain()
-
         return ForwardBlock(parameter=param, operations=operations)
+
+    def _split_dot_outside_parens(self, text: str) -> List[str]:
+        """Split `a.b(c).d` into segments by dot outside parentheses."""
+        segments: List[str] = []
+        current = ""
+        paren_depth = 0
+        for char in text:
+            if char == "(":
+                paren_depth += 1
+                current += char
+            elif char == ")":
+                paren_depth -= 1
+                current += char
+            elif char == "." and paren_depth == 0:
+                if current:
+                    segments.append(current)
+                current = ""
+            else:
+                current += char
+        if current:
+            segments.append(current)
+        return segments
+
+    def _parse_graph_forward_block(self, parameter: str) -> ForwardGraphBlock:
+        """Parse graph-based forward statements."""
+        indent = self._get_indent_level(self.current_line)
+        nodes: List[GraphOp] = []
+        output_var: Optional[str] = None
+
+        while self.current_line < len(self.lines):
+            line = self.lines[self.current_line].rstrip()
+            if not line or line.lstrip().startswith("#"):
+                self.current_line += 1
+                continue
+
+            current_indent = self._get_indent_level(self.current_line)
+            if current_indent < indent:
+                break
+            if current_indent > indent:
+                self.current_line += 1
+                continue
+
+            stripped = line.strip()
+            if stripped.startswith("return "):
+                output_var = stripped[len("return ") :].strip()
+                self.current_line += 1
+                continue
+
+            assign_match = re.match(r"(\w+)\s*=\s*(.+)$", stripped)
+            if not assign_match:
+                # Unrecognized statement; stop at the first mismatch.
+                break
+
+            target = assign_match.group(1)
+            expr = assign_match.group(2).strip()
+
+            op, inputs = self._parse_graph_expr(expr)
+
+            nodes.append(
+                GraphOp(target=target, inputs=inputs, operation=op, line=self.current_line + 1)
+            )
+            self.current_line += 1
+
+        if output_var is None and nodes:
+            output_var = nodes[-1].target
+
+        return ForwardGraphBlock(parameter=parameter, nodes=nodes, output_var=output_var, line=0)
+
+    def _parse_graph_expr(self, expr: str) -> Tuple[LayerOperation, List[str]]:
+        """
+        Parse an expression like `dense(x, 64).relu` or `add(h1, x).relu`.
+
+        Returns:
+            (LayerOperation, inputs)
+        """
+        # Split by dot outside parentheses to extract optional activation suffix.
+        segments = self._split_dot_outside_parens(expr)
+        if not segments:
+            raise ParseError("Empty expression in graph forward")
+
+        base = segments[0].strip()
+        activation: Optional[str] = None
+        if len(segments) > 1:
+            # Keep last activation segment, consistent with v1 parser behavior.
+            for seg in segments[1:]:
+                seg = seg.strip()
+                if not seg:
+                    continue
+                if "(" in seg:
+                    # Unexpected nested call in activation position.
+                    raise ParseError(f"Unexpected call in activation position: {seg}")
+                activation = seg
+
+        call_match = re.match(r"(\w+)\((.*)\)$", base)
+        if not call_match:
+            raise ParseError(f"Invalid graph op expression: {expr}")
+
+        op_name = call_match.group(1)
+        args_str = call_match.group(2)
+        args, kwargs = self._parse_arguments(args_str)
+
+        op_name_lower = op_name.lower()
+        input_vars: List[str] = []
+        op_args: List[Any] = []
+
+        if op_name_lower in ("add", "concat"):
+            # All positional arguments are tensor inputs.
+            input_vars = [str(a) for a in args]
+            op_args = []
+        else:
+            if not args:
+                raise ParseError(f"Graph op '{op_name}' missing input tensor as first argument")
+            input_vars = [str(args[0])]
+            op_args = args[1:]
+
+        return (
+            LayerOperation(operation=op_name, args=op_args, kwargs=kwargs, activation=activation),
+            input_vars,
+        )
 
     def _parse_layer_chain(self) -> List[LayerOperation]:
         """Parse the layer chain (x -> conv2d(...).relu -> ...)."""
-        operations = []
+        operations: List[LayerOperation] = []
         indent = self._get_indent_level(self.current_line)
 
         # Get the forward parameter name from the previous model parsing state if possible
@@ -247,10 +389,10 @@ class Parser:
             flatten()
             dropout(0.5)
         """
-        operations = []
+        operations: List[LayerOperation] = []
 
         # Split by dots that are not inside parentheses
-        segments = []
+        segments: List[str] = []
         current = ""
         paren_depth = 0
 
@@ -423,18 +565,27 @@ class Parser:
 
         return key, value
 
+    def _parse_global_variable(self) -> Variable:
+        """Parse a top-level variable assignment."""
+        line = self.lines[self.current_line]
+        key, value = self._parse_assignment(line)
+        if not key:
+            raise ParseError(f"Invalid variable assignment at line {self.current_line + 1}")
+        self.current_line += 1
+        return Variable(name=key, value=value, line=self.current_line)
+
     def _parse_value(self, value_str: str) -> Any:
         """Parse a value from a string."""
         value_str = value_str.strip()
 
         # Boolean
-        if value_str == "True":
+        if value_str.lower() == "true":
             return True
-        if value_str == "False":
+        if value_str.lower() == "false":
             return False
 
         # None
-        if value_str == "None":
+        if value_str.lower() in ("none", "null"):
             return None
 
         # Integer
@@ -476,8 +627,8 @@ class Parser:
 
     def _parse_arguments(self, args_str: str) -> Tuple[List[Any], Dict[str, Any]]:
         """Parse function arguments into positional args and kwargs."""
-        args = []
-        kwargs = {}
+        args: List[Any] = []
+        kwargs: Dict[str, Any] = {}
 
         if not args_str.strip():
             return args, kwargs
@@ -543,4 +694,8 @@ def parse_aurane(source: str) -> AuraneProgram:
         ParseError: If the source code contains syntax errors.
     """
     parser = Parser(source)
-    return parser.parse()
+    program = parser.parse()
+    if parser.errors:
+        formatted = "\n".join(f"line {line}: {message}" for line, message in parser.errors)
+        raise ParseError(formatted)
+    return program

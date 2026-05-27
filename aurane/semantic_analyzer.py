@@ -20,6 +20,7 @@ from .ast import (
     ExperimentNode,
     LayerOperation,
     ForwardBlock,
+    ForwardGraphBlock,
 )
 
 
@@ -69,7 +70,7 @@ class SemanticAnalysisResult:
 
 
 # Known layer operations and their expected arguments
-LAYER_SPECS = {
+LAYER_SPECS: Dict[str, Dict[str, Any]] = {
     "conv2d": {
         "args": ["out_channels"],
         "kwargs": {"kernel": int, "stride": int, "padding": int, "bias": bool},
@@ -110,6 +111,11 @@ LAYER_SPECS = {
         "kwargs": {"momentum": float, "eps": float},
         "activations": ["relu", "gelu"],
     },
+    "batch_norm": {
+        "args": [],
+        "kwargs": {"momentum": float, "eps": float},
+        "activations": ["relu", "gelu"],
+    },
     "layer_norm": {
         "args": [],
         "kwargs": {"eps": float},
@@ -117,6 +123,16 @@ LAYER_SPECS = {
     },
     "flatten": {
         "args": [],
+        "kwargs": {},
+        "activations": [],
+    },
+    "reshape": {
+        "args": ["shape"],
+        "kwargs": {},
+        "activations": [],
+    },
+    "leaky_relu": {
+        "args": ["negative_slope"],
         "kwargs": {},
         "activations": [],
     },
@@ -361,7 +377,11 @@ class SemanticAnalyzer:
             )
 
         # Analyze operations
-        ops = model.forward_block.operations
+        if isinstance(model.forward_block, ForwardGraphBlock):
+            ops = [n.operation for n in model.forward_block.nodes if n.operation is not None]
+        else:
+            ops = model.forward_block.operations
+
         if not ops:
             self._add_issue(
                 IssueKind.WARNING, "Model has empty forward block", f"model {model.name}", "W006"
@@ -431,13 +451,16 @@ class SemanticAnalyzer:
         if not model.forward_block:
             return
 
-        ops = model.forward_block.operations
+        if isinstance(model.forward_block, ForwardGraphBlock):
+            ops = [n.operation for n in model.forward_block.nodes if n.operation is not None]
+        else:
+            ops = model.forward_block.operations
         op_names = [op.operation.lower() for op in ops]
 
         # Check for missing batchnorm after conv
         for i, (op, name) in enumerate(zip(ops, op_names)):
             if name == "conv2d":
-                if i + 1 < len(ops) and op_names[i + 1] != "batchnorm":
+                if i + 1 < len(ops) and op_names[i + 1] not in ("batchnorm", "batch_norm"):
                     self._add_issue(
                         IssueKind.SUGGESTION,
                         "Consider adding batchnorm after conv2d",

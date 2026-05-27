@@ -239,6 +239,29 @@ class TestValidModels:
         result = analyze_semantics(program)
         assert result.is_valid
 
+    def test_supported_gan_operations_are_known(self):
+        """Test GAN helper operations are recognized by semantic analysis."""
+        source = """model Generator:
+    input_shape = (100,)
+    def forward(z):
+        z -> dense(256).relu
+          -> batch_norm()
+          -> dense(784).tanh
+          -> reshape(1, 28, 28)
+
+model Discriminator:
+    input_shape = (1, 28, 28)
+    def forward(x):
+        x -> flatten()
+          -> dense(1024).leaky_relu(0.2)
+          -> dense(1).sigmoid
+"""
+        program = parse_aurane(source)
+        result = analyze_semantics(program)
+
+        unknown_ops = [issue for issue in result.issues if issue.code == "W007"]
+        assert unknown_ops == []
+
 
 class TestMultipleModels:
     """Tests for analyzing multiple models."""

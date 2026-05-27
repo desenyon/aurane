@@ -17,6 +17,7 @@ from .ast import (
     ModelNode,
     LayerOperation,
     ForwardBlock,
+    ForwardGraphBlock,
 )
 from .shapes import infer_output_shape, calculate_params, to_int
 
@@ -122,33 +123,93 @@ class ModelProfiler:
             input_shape = tuple(input_shape)
 
         self.profile.input_shape = input_shape
-        current_shape = input_shape
-
-        for idx, op in enumerate(self.model.forward_block.operations):
-            # Calculate layer metrics
-            output_shape = infer_output_shape(op, current_shape)
-            flops = self._calculate_flops(op, current_shape, output_shape)
-            params = calculate_params(op, current_shape)
-            memory = self._calculate_memory(output_shape, batch_size)
-
-            layer_profile = LayerProfile(
-                name=f"layer_{idx}",
-                operation=op.operation,
-                input_shape=current_shape,
-                output_shape=output_shape,
-                flops=flops,
-                params=params,
-                memory_bytes=memory,
+        if isinstance(self.model.forward_block, ForwardGraphBlock):
+            shape_env = {self.model.forward_block.parameter: input_shape}
+            output_var = self.model.forward_block.output_var or (
+                self.model.forward_block.nodes[-1].target
+                if self.model.forward_block.nodes
+                else self.model.forward_block.parameter
             )
+            for idx, node in enumerate(self.model.forward_block.nodes):
+                op = node.operation
+                if op is None:
+                    continue
+                op_name = op.operation.lower()
+                inputs = node.inputs
 
-            self.profile.layers.append(layer_profile)
-            self.profile.total_flops += flops
-            self.profile.total_params += params
-            self.profile.total_memory_bytes += memory
+                if op_name == "add":
+                    in_shape = shape_env.get(inputs[0], input_shape)
+                    output_shape = in_shape
+                elif op_name == "concat":
+                    dim = int(op.kwargs.get("dim", 1))
+                    shapes_in = [shape_env.get(v, input_shape) for v in inputs]
+                    if shapes_in and all(len(s) == len(shapes_in[0]) for s in shapes_in):
+                        out_dims = list(shapes_in[0])
+                        dim_sum = 0
+                        for s in shapes_in:
+                            d = s[dim] if len(s) > dim else -1
+                            if d == -1 or dim_sum == -1:
+                                dim_sum = -1
+                                break
+                            dim_sum += d
+                        out_dims[dim] = dim_sum
+                        output_shape = tuple(out_dims)
+                    else:
+                        output_shape = shapes_in[0] if shapes_in else input_shape
+                    in_shape = shape_env.get(inputs[0], input_shape)
+                else:
+                    in_shape = shape_env.get(inputs[0], input_shape)
+                    output_shape = infer_output_shape(op, in_shape)
 
-            current_shape = output_shape
+                flops = self._calculate_flops(op, in_shape, output_shape)
+                params = calculate_params(op, in_shape)
+                memory = self._calculate_memory(output_shape, batch_size)
 
-        self.profile.output_shape = current_shape
+                layer_profile = LayerProfile(
+                    name=f"node_{idx}:{node.target}",
+                    operation=op.operation,
+                    input_shape=in_shape,
+                    output_shape=output_shape,
+                    flops=flops,
+                    params=params,
+                    memory_bytes=memory,
+                )
+
+                self.profile.layers.append(layer_profile)
+                self.profile.total_flops += flops
+                self.profile.total_params += params
+                self.profile.total_memory_bytes += memory
+
+                shape_env[node.target] = output_shape
+
+            self.profile.output_shape = shape_env.get(output_var, input_shape)
+        else:
+            current_shape = input_shape
+
+            for idx, op in enumerate(self.model.forward_block.operations):
+                output_shape = infer_output_shape(op, current_shape)
+                flops = self._calculate_flops(op, current_shape, output_shape)
+                params = calculate_params(op, current_shape)
+                memory = self._calculate_memory(output_shape, batch_size)
+
+                layer_profile = LayerProfile(
+                    name=f"layer_{idx}",
+                    operation=op.operation,
+                    input_shape=current_shape,
+                    output_shape=output_shape,
+                    flops=flops,
+                    params=params,
+                    memory_bytes=memory,
+                )
+
+                self.profile.layers.append(layer_profile)
+                self.profile.total_flops += flops
+                self.profile.total_params += params
+                self.profile.total_memory_bytes += memory
+
+                current_shape = output_shape
+
+            self.profile.output_shape = current_shape
 
         # Calculate percentages and find bottleneck
         self._calculate_percentages()
@@ -179,29 +240,29 @@ class ModelProfiler:
 
                 # FLOPs = 2 * K^2 * Cin * Cout * Hout * Wout
                 flops = 2 * kernel * kernel * in_channels * out_channels * h_out * w_out
-                return flops
+                return int(flops)
             return 0
 
         elif op_name in ("dense", "linear"):
             in_features = input_shape[0] if input_shape else 128
             out_features = output_shape[0] if output_shape else 128
             # FLOPs = 2 * in * out (multiply + add)
-            return 2 * in_features * out_features
+            return int(2 * in_features * out_features)
 
         elif op_name in ("maxpool", "avgpool"):
             if len(output_shape) == 3:
                 c, h, w = output_shape
                 kernel = to_int(op.args[0], 2) if op.args else 2
-                return c * h * w * kernel * kernel
+                return int(c * h * w * kernel * kernel)
             return 0
 
         elif op_name == "batchnorm":
             # Roughly 4 ops per element (normalize + scale + shift)
             if len(input_shape) == 3:
                 c, h, w = input_shape
-                return 4 * c * h * w
+                return int(4 * c * h * w)
             elif len(input_shape) == 1:
-                return 4 * input_shape[0]
+                return int(4 * input_shape[0])
             return 0
 
         elif op_name == "multihead_attention":

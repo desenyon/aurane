@@ -2,11 +2,14 @@
 Inspect command for Aurane CLI.
 """
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file, get_file_stats
 from ...parser import parse_aurane
 from ...visualizer import print_model_summary
+from ...ast import ForwardGraphBlock
 
 try:
     from rich.tree import Tree
@@ -31,6 +34,15 @@ def cmd_inspect(args):
         console.print(f"[dim]{file_stats['lines']} lines • {file_stats['size']:,} bytes[/dim]\n")
 
         show_ast_tree(ast)
+
+        if args.stats:
+            show_program_stats(ast)
+
+        if args.export:
+            export_path = Path(args.export)
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            export_path.write_text(json.dumps(asdict(ast), indent=2), encoding="utf-8")
+            console.print(f"\n[green][OK][/green] Exported AST to {export_path}")
 
         if ast.models and args.verbose:
             console.print("\n[bold cyan]=== Model Details ===[/bold cyan]\n")
@@ -65,10 +77,48 @@ def show_ast_tree(ast):
             model_node = models.add(f"[green]{model.name}[/green]")
             if model.forward_block:
                 forward = model_node.add("[blue]forward")
-                for op in model.forward_block.operations:
-                    op_str = f"{op.operation}({', '.join(map(str, op.args))})"
-                    if op.activation:
-                        op_str += f".{op.activation}"
-                    forward.add(f"[dim]{op_str}[/dim]")
+                if isinstance(model.forward_block, ForwardGraphBlock):
+                    for node in model.forward_block.nodes:
+                        op = node.operation
+                        if op is None:
+                            continue
+                        inputs_str = ", ".join(map(str, node.inputs))
+                        extra_args = ""
+                        if op.args:
+                            extra_args = ", " + ", ".join(map(str, op.args))
+                        op_str = f"{node.target} = {op.operation}({inputs_str}{extra_args})"
+                        if op.kwargs:
+                            kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                            op_str += f" [{kw_str}]"
+                        if op.activation:
+                            op_str += f".{op.activation}"
+                        forward.add(f"[dim]{op_str}[/dim]")
+                else:
+                    for op in model.forward_block.operations:
+                        op_str = f"{op.operation}({', '.join(map(str, op.args))})"
+                        if op.activation:
+                            op_str += f".{op.activation}"
+                        forward.add(f"[dim]{op_str}[/dim]")
 
     console.print(tree)
+
+
+def show_program_stats(ast):
+    """Display aggregate program counts."""
+    if not RICH_AVAILABLE or console is None:
+        return
+
+    table = Table(title="Program Statistics", show_header=True, header_style="bold cyan")
+    table.add_column("Item", style="cyan")
+    table.add_column("Count", justify="right", style="green")
+
+    table.add_row("Imports", str(len(ast.uses)))
+    table.add_row("Variables", str(len(ast.variables)))
+    table.add_row("Experiments", str(len(ast.experiments)))
+    table.add_row("Datasets", str(len(ast.datasets)))
+    table.add_row("Models", str(len(ast.models)))
+    table.add_row("Training blocks", str(len(ast.trains)))
+    table.add_row("GAN training blocks", str(len(ast.train_gans)))
+
+    console.print()
+    console.print(table)

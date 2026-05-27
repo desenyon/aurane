@@ -14,6 +14,7 @@ from .ast import (
     ModelNode,
     LayerOperation,
     ForwardBlock,
+    ForwardGraphBlock,
 )
 
 
@@ -57,9 +58,19 @@ class ASTOptimizer:
         Returns:
             OptimizationResult with optimized program.
         """
+
         # Count original layers
+        def count_layers(block) -> int:
+            if not block:
+                return 0
+            if isinstance(block, ForwardBlock):
+                return len(block.operations)
+            if isinstance(block, ForwardGraphBlock):
+                return len(block.nodes)
+            return 0
+
         self.stats["original_layers"] = sum(
-            len(m.forward_block.operations) if m.forward_block else 0 for m in self.program.models
+            count_layers(m.forward_block) for m in self.program.models
         )
 
         if level >= 1:
@@ -74,7 +85,7 @@ class ASTOptimizer:
 
         # Count optimized layers
         self.stats["optimized_layers"] = sum(
-            len(m.forward_block.operations) if m.forward_block else 0 for m in self.program.models
+            count_layers(m.forward_block) for m in self.program.models
         )
 
         return OptimizationResult(
@@ -85,6 +96,9 @@ class ASTOptimizer:
         """Fuse Conv2d + BatchNorm + ReLU into single operation."""
         for model in self.program.models:
             if not model.forward_block:
+                continue
+            if isinstance(model.forward_block, ForwardGraphBlock):
+                # Graph forward wiring makes safe fusion non-trivial; skip for now.
                 continue
 
             ops = model.forward_block.operations
@@ -131,6 +145,8 @@ class ASTOptimizer:
         for model in self.program.models:
             if not model.forward_block:
                 continue
+            if isinstance(model.forward_block, ForwardGraphBlock):
+                continue
 
             ops = model.forward_block.operations
             new_ops = []
@@ -155,6 +171,8 @@ class ASTOptimizer:
         for model in self.program.models:
             if not model.forward_block:
                 continue
+            if isinstance(model.forward_block, ForwardGraphBlock):
+                continue
 
             ops = model.forward_block.operations
             if len(ops) >= 2:
@@ -174,6 +192,8 @@ class ASTOptimizer:
         """Fuse consecutive dense layers without activation."""
         for model in self.program.models:
             if not model.forward_block:
+                continue
+            if isinstance(model.forward_block, ForwardGraphBlock):
                 continue
 
             ops = model.forward_block.operations
@@ -204,6 +224,8 @@ class ASTOptimizer:
         """Optimize pooling operations."""
         for model in self.program.models:
             if not model.forward_block:
+                continue
+            if isinstance(model.forward_block, ForwardGraphBlock):
                 continue
 
             ops = model.forward_block.operations

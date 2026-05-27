@@ -2,9 +2,13 @@
 Lint command for Aurane CLI.
 """
 
+import re
+
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
 from ...parser import parse_aurane
+
+BLOCK_PATTERN = re.compile(r"^(def|model|dataset|train|train_gan|experiment)\b.*[^:]$")
 
 
 def cmd_lint(args):
@@ -37,14 +41,11 @@ def cmd_lint(args):
 
             # Missing colons on blocks
             stripped = line.strip()
-            if stripped.startswith(("def ", "model ", "dataset ", "train ", "experiment ")):
-                if not stripped.endswith(":"):
-                    issues.append(
-                        ("warning", f"Line {i}: Missing colon at end of block definition")
-                    )
-                    if getattr(args, "auto_fix", False):
-                        line = line + ":"
-                        fixed = True
+            if "=" not in stripped and BLOCK_PATTERN.match(stripped):
+                issues.append(("warning", f"Line {i}: Missing colon at end of block definition"))
+                if getattr(args, "auto_fix", False):
+                    line = line + ":"
+                    fixed = True
 
             if len(line) > 100:
                 issues.append(("warning", f"Line {i}: Line too long ({len(line)} > 100)"))

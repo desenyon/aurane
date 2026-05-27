@@ -10,6 +10,25 @@ from ..utils import validate_file
 from .compile import cmd_compile
 
 
+def _compile_args_from_watch_args(args):
+    """Build a compile-compatible namespace from watch command args."""
+    return argparse.Namespace(
+        input=args.input,
+        output=args.output,
+        output_override=None,
+        backend=args.backend,
+        analyze=getattr(args, "analyze", False),
+        validate=False,
+        optimize=False,
+        opt_level=1,
+        format=False,
+        show_ast=False,
+        diff=False,
+        quiet=False,
+        verbose=False,
+    )
+
+
 def cmd_watch(args):
     """Watch mode - auto-recompile on changes."""
     if not RICH_AVAILABLE or console is None:
@@ -38,14 +57,13 @@ def cmd_watch(args):
                 self.last_compile = current
 
                 console.print(f"\n[yellow][RELOAD] File changed, recompiling...[/yellow]")
-                args_copy = argparse.Namespace(**vars(args))
-                cmd_compile(args_copy)
+                cmd_compile(_compile_args_from_watch_args(args))
 
     console.print(f"[cyan]Watching:[/cyan] {args.input}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     # Initial compile
-    cmd_compile(args)
+    cmd_compile(_compile_args_from_watch_args(args))
 
     event_handler = AuraneFileHandler()
     observer = Observer()

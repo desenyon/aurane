@@ -5,7 +5,7 @@ Provides model architecture visualization, training metrics, and analysis.
 """
 
 from typing import Optional, List, Tuple
-from .ast import ModelNode, LayerOperation
+from .ast import ModelNode, LayerOperation, ForwardGraphBlock
 from .shapes import (
     infer_output_shape as calculate_output_shape,
     calculate_params as calculate_parameters,
@@ -49,29 +49,81 @@ def print_model_summary(model: ModelNode):
 
     table.add_row("Input", "-", str(input_shape), "0")
 
-    for idx, op in enumerate(model.forward_block.operations, 1):
-        # Calculate params
-        params = calculate_parameters(op, current_shape)
-        total_params += params
+    if isinstance(model.forward_block, ForwardGraphBlock):
+        shape_env = {model.forward_block.parameter: current_shape}
+        for idx, node in enumerate(model.forward_block.nodes, 1):
+            op = node.operation
+            if op is None:
+                continue
+            op_name = op.operation.lower()
+            inputs = node.inputs
 
-        # Calculate output shape
-        current_shape = calculate_output_shape(op, current_shape)
+            if op_name == "add":
+                current_shape = shape_env.get(inputs[0], current_shape)
+                params = 0
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                shapes = [shape_env.get(v, current_shape) for v in inputs]
+                if shapes and all(len(s) == len(shapes[0]) for s in shapes):
+                    out_dims = list(shapes[0])
+                    dim_sum = 0
+                    for s in shapes:
+                        d = s[dim] if len(s) > dim else -1
+                        if d == -1 or dim_sum == -1:
+                            dim_sum = -1
+                            break
+                        dim_sum += d
+                    out_dims[dim] = dim_sum
+                    current_shape = tuple(out_dims)
+                else:
+                    current_shape = shapes[0] if shapes else current_shape
+                params = 0
+            else:
+                in_shape = shape_env.get(inputs[0], current_shape)
+                params = calculate_parameters(op, in_shape)
+                total_params += params
+                current_shape = calculate_output_shape(op, in_shape)
 
-        # Format operation
-        op_str = f"{op.operation}("
-        if op.args:
-            op_str += ", ".join(map(str, op.args))
-        if op.kwargs:
+            shape_env[node.target] = current_shape
+
+            # Format operation (params display is best-effort for graph ops).
+            op_str = f"{op.operation}("
             if op.args:
-                op_str += ", "
-            op_str += ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
-        op_str += ")"
+                op_str += ", ".join(map(str, op.args))
+            if op.kwargs:
+                if op.args:
+                    op_str += ", "
+                op_str += ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+            op_str += ")"
+            if op.activation:
+                op_str += f".{op.activation}"
 
-        if op.activation:
-            op_str += f".{op.activation}"
+            layer_name = f"node_{idx}:{node.target}"
+            table.add_row(layer_name, op_str, str(current_shape), f"{params:,}")
+    else:
+        for idx, op in enumerate(model.forward_block.operations, 1):
+            # Calculate params
+            params = calculate_parameters(op, current_shape)
+            total_params += params
 
-        layer_name = f"layer_{idx}"
-        table.add_row(layer_name, op_str, str(current_shape), f"{params:,}")
+            # Calculate output shape
+            current_shape = calculate_output_shape(op, current_shape)
+
+            # Format operation
+            op_str = f"{op.operation}("
+            if op.args:
+                op_str += ", ".join(map(str, op.args))
+            if op.kwargs:
+                if op.args:
+                    op_str += ", "
+                op_str += ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+            op_str += ")"
+
+            if op.activation:
+                op_str += f".{op.activation}"
+
+            layer_name = f"layer_{idx}"
+            table.add_row(layer_name, op_str, str(current_shape), f"{params:,}")
 
     console.print(table)
 
@@ -106,21 +158,73 @@ def visualize_model_architecture(model: ModelNode, output_file: Optional[str] = 
     input_node = tree.add(f"[green]Input: {input_shape}[/green]")
     current_node = input_node
 
-    for idx, op in enumerate(model.forward_block.operations, 1):
-        current_shape = calculate_output_shape(op, current_shape)
-        params = calculate_parameters(op, current_shape)
+    if isinstance(model.forward_block, ForwardGraphBlock):
+        shape_env = {model.forward_block.parameter: current_shape}
+        for idx, node in enumerate(model.forward_block.nodes, 1):
+            op = node.operation
+            if op is None:
+                continue
 
-        op_desc = f"{op.operation}"
-        if op.args:
-            op_desc += f"({', '.join(map(str, op.args))})"
-        if op.activation:
-            op_desc += f" >> {op.activation}"
+            op_name = op.operation.lower()
+            inputs = node.inputs
 
-        op_desc += f" >> {current_shape}"
-        if params > 0:
-            op_desc += f" [{params:,} params]"
+            if op_name == "add":
+                current_shape = shape_env.get(inputs[0], current_shape)
+                params = 0
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                shapes = [shape_env.get(v, current_shape) for v in inputs]
+                if shapes and all(len(s) == len(shapes[0]) for s in shapes):
+                    out_dims = list(shapes[0])
+                    dim_sum = 0
+                    for s in shapes:
+                        d = s[dim] if len(s) > dim else -1
+                        if d == -1 or dim_sum == -1:
+                            dim_sum = -1
+                            break
+                        dim_sum += d
+                    out_dims[dim] = dim_sum
+                    current_shape = tuple(out_dims)
+                else:
+                    current_shape = shapes[0] if shapes else current_shape
+                params = 0
+            else:
+                in_shape = shape_env.get(inputs[0], current_shape)
+                params = calculate_parameters(op, in_shape)
+                current_shape = calculate_output_shape(op, in_shape)
 
-        current_node = current_node.add(f"[yellow]{op_desc}[/yellow]")
+            shape_env[node.target] = current_shape
+
+            op_desc = f"{op.operation} -> {node.target}"
+            if op.activation:
+                op_desc += f".{op.activation}"
+            if op.args:
+                op_desc += f"({', '.join(map(str, op.args))})"
+            if op.kwargs:
+                kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                op_desc += f"({kw_str})"
+            op_desc += f" >> {current_shape}"
+            if params > 0:
+                op_desc += f" [{params:,} params]"
+
+            current_node = current_node.add(f"[yellow]{op_desc}[/yellow]")
+    else:
+        for idx, op in enumerate(model.forward_block.operations, 1):
+            input_shape_for_op = current_shape
+            current_shape = calculate_output_shape(op, input_shape_for_op)
+            params = calculate_parameters(op, input_shape_for_op)
+
+            op_desc = f"{op.operation}"
+            if op.args:
+                op_desc += f"({', '.join(map(str, op.args))})"
+            if op.activation:
+                op_desc += f" >> {op.activation}"
+
+            op_desc += f" >> {current_shape}"
+            if params > 0:
+                op_desc += f" [{params:,} params]"
+
+            current_node = current_node.add(f"[yellow]{op_desc}[/yellow]")
 
     current_node.add(f"[green]Output: {current_shape}[/green]")
 
@@ -128,6 +232,215 @@ def visualize_model_architecture(model: ModelNode, output_file: Optional[str] = 
 
     if output_file:
         console.save_svg(output_file, title=f"{model.name} Architecture")
+
+
+def render_model_architecture_mermaid(model: ModelNode) -> str:
+    """Render model architecture as a Mermaid flowchart."""
+    nodes: List[str] = []
+    edges: List[str] = []
+
+    node_id = lambda idx: f"op{idx}"
+
+    # Use input/output shapes when available to keep nodes informative.
+    input_shape = model.config.get("input_shape", (1, 28, 28))
+    current_shape = input_shape
+
+    nodes.append(f'{node_id(0)}["Input: {input_shape}"]')
+
+    if not model.forward_block:
+        nodes.append(f'{node_id(1)}["Output: ?"]')
+        edges.append(f"{node_id(0)} --> {node_id(1)}")
+        return _wrap_mermaid(nodes, edges)
+
+    prev_idx = 0
+    if isinstance(model.forward_block, ForwardGraphBlock):
+        shape_env = {model.forward_block.parameter: current_shape}
+        for idx, node in enumerate(model.forward_block.nodes, 1):
+            op = node.operation
+            if op is None:
+                continue
+            op_name = op.operation.lower()
+            inputs = node.inputs
+            params_shape = current_shape
+
+            if op_name == "add":
+                next_shape = shape_env.get(inputs[0], current_shape)
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                shapes_in = [shape_env.get(v, current_shape) for v in inputs]
+                if shapes_in and all(len(s) == len(shapes_in[0]) for s in shapes_in):
+                    out_dims = list(shapes_in[0])
+                    dim_sum = 0
+                    for s in shapes_in:
+                        d = s[dim] if len(s) > dim else -1
+                        if d == -1 or dim_sum == -1:
+                            dim_sum = -1
+                            break
+                        dim_sum += d
+                    out_dims[dim] = dim_sum
+                    next_shape = tuple(out_dims)
+                else:
+                    next_shape = shapes_in[0] if shapes_in else current_shape
+            else:
+                in_shape = shape_env.get(inputs[0], current_shape)
+                params_shape = in_shape
+                next_shape = calculate_output_shape(op, in_shape)
+
+            params = 0 if op_name in ("add", "concat") else calculate_parameters(op, params_shape)
+            op_label = f"{op.operation} -> {node.target}"
+            if op.args:
+                op_label += f"({', '.join(map(str, op.args))})"
+            if op.kwargs:
+                kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                op_label += f"({kw_str})"
+            if op.activation:
+                op_label += f".{op.activation}"
+            if next_shape:
+                op_label += f" -> {next_shape}"
+            if params:
+                op_label += f" ({params:,} params)"
+
+            nodes.append(f'{node_id(idx)}["{op_label}"]')
+            edges.append(f"{node_id(prev_idx)} --> {node_id(idx)}")
+            prev_idx = idx
+            current_shape = next_shape
+            shape_env[node.target] = next_shape
+    else:
+        for idx, op in enumerate(model.forward_block.operations, 1):
+            input_shape_for_op = current_shape
+            next_shape = calculate_output_shape(op, input_shape_for_op)
+            params = calculate_parameters(op, input_shape_for_op)
+            op_label = op.operation
+            if op.args:
+                op_label += f"({', '.join(map(str, op.args))})"
+            if op.kwargs:
+                kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                op_label += f"({kw_str})"
+            if op.activation:
+                op_label += f".{op.activation}"
+            if next_shape:
+                op_label += f" -> {next_shape}"
+            if params:
+                op_label += f" ({params:,} params)"
+
+            nodes.append(f'{node_id(idx)}["{op_label}"]')
+            edges.append(f"{node_id(prev_idx)} --> {node_id(idx)}")
+            prev_idx = idx
+            current_shape = next_shape
+
+    nodes.append(f'{node_id(prev_idx + 1)}["Output: {current_shape}"]')
+    edges.append(f"{node_id(prev_idx)} --> {node_id(prev_idx + 1)}")
+
+    return _wrap_mermaid(nodes, edges)
+
+
+def render_model_architecture_dot(model: ModelNode) -> str:
+    """Render model architecture as a DOT graph."""
+    node_lines: List[str] = []
+    edge_lines: List[str] = []
+
+    node_id = lambda idx: f"op{idx}"
+
+    input_shape = model.config.get("input_shape", (1, 28, 28))
+    current_shape = input_shape
+    node_lines.append(f'{node_id(0)} [label="Input: {input_shape}"];')
+
+    if not model.forward_block:
+        node_lines.append(f'{node_id(1)} [label="Output: ?"];')
+        edge_lines.append(f"{node_id(0)} -> {node_id(1)};")
+        return _wrap_dot(node_lines, edge_lines)
+
+    prev_idx = 0
+    if isinstance(model.forward_block, ForwardGraphBlock):
+        shape_env = {model.forward_block.parameter: current_shape}
+        for idx, node in enumerate(model.forward_block.nodes, 1):
+            op = node.operation
+            if op is None:
+                continue
+            op_name = op.operation.lower()
+            inputs = node.inputs
+            params_shape = current_shape
+
+            if op_name == "add":
+                next_shape = shape_env.get(inputs[0], current_shape)
+            elif op_name == "concat":
+                dim = int(op.kwargs.get("dim", 1))
+                shapes_in = [shape_env.get(v, current_shape) for v in inputs]
+                if shapes_in and all(len(s) == len(shapes_in[0]) for s in shapes_in):
+                    out_dims = list(shapes_in[0])
+                    dim_sum = 0
+                    for s in shapes_in:
+                        d = s[dim] if len(s) > dim else -1
+                        if d == -1 or dim_sum == -1:
+                            dim_sum = -1
+                            break
+                        dim_sum += d
+                    out_dims[dim] = dim_sum
+                    next_shape = tuple(out_dims)
+                else:
+                    next_shape = shapes_in[0] if shapes_in else current_shape
+            else:
+                in_shape = shape_env.get(inputs[0], current_shape)
+                params_shape = in_shape
+                next_shape = calculate_output_shape(op, in_shape)
+
+            params = 0 if op_name in ("add", "concat") else calculate_parameters(op, params_shape)
+            op_label = f"{op.operation} -> {node.target}"
+            if op.args:
+                op_label += f"({', '.join(map(str, op.args))})"
+            if op.kwargs:
+                kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                op_label += f"({kw_str})"
+            if op.activation:
+                op_label += f".{op.activation}"
+
+            if next_shape:
+                op_label += f"\\n{next_shape}"
+            if params:
+                op_label += f"\\n{params:,} params"
+
+            node_lines.append(f'{node_id(idx)} [label="{op_label}"];')
+            edge_lines.append(f"{node_id(prev_idx)} -> {node_id(idx)};")
+            prev_idx = idx
+            current_shape = next_shape
+            shape_env[node.target] = next_shape
+    else:
+        prev_idx = 0
+        for idx, op in enumerate(model.forward_block.operations, 1):
+            input_shape_for_op = current_shape
+            next_shape = calculate_output_shape(op, input_shape_for_op)
+            params = calculate_parameters(op, input_shape_for_op)
+            op_label = op.operation
+            if op.args:
+                op_label += f"({', '.join(map(str, op.args))})"
+            if op.kwargs:
+                kw_str = ", ".join(f"{k}={v}" for k, v in op.kwargs.items())
+                op_label += f"({kw_str})"
+            if op.activation:
+                op_label += f".{op.activation}"
+
+            if next_shape:
+                op_label += f"\\n{next_shape}"
+            if params:
+                op_label += f"\\n{params:,} params"
+
+            node_lines.append(f'{node_id(idx)} [label="{op_label}"];')
+            edge_lines.append(f"{node_id(prev_idx)} -> {node_id(idx)};")
+            prev_idx = idx
+            current_shape = next_shape
+
+    node_lines.append(f'{node_id(prev_idx + 1)} [label="Output: {current_shape}"];')
+    edge_lines.append(f"{node_id(prev_idx)} -> {node_id(prev_idx + 1)};")
+
+    return _wrap_dot(node_lines, edge_lines)
+
+
+def _wrap_mermaid(nodes: List[str], edges: List[str]) -> str:
+    return "\n".join(["flowchart TD", *nodes, *edges])
+
+
+def _wrap_dot(node_lines: List[str], edge_lines: List[str]) -> str:
+    return "\n".join(["digraph Aurane {", "rankdir=LR;", *node_lines, *edge_lines, "}"])
 
 
 def generate_training_report(metrics: dict, output_file: Optional[str] = None):
@@ -172,7 +485,12 @@ def plot_layer_shapes(model: ModelNode):
     text.append(str(input_shape), style="green")
     console.print(text)
 
-    for op in model.forward_block.operations:
+    if isinstance(model.forward_block, ForwardGraphBlock):
+        operations = [node.operation for node in model.forward_block.nodes if node.operation]
+    else:
+        operations = model.forward_block.operations
+
+    for op in operations:
         current_shape = calculate_output_shape(op, current_shape)
 
         text = Text()

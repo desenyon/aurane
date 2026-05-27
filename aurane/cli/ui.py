@@ -42,7 +42,7 @@ def print_banner():
 [bold cyan]   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝[/bold cyan]
    
    [dim]ML-oriented DSL that transpiles to idiomatic Python[/dim]
-   [dim]Version 1.0.0 • PyTorch Backend • MIT License[/dim]
+   [dim]Version 2.0.0 • Torch-First Backend • MIT License[/dim]
     """
     console.print(Panel(banner, border_style="cyan", expand=False))
 

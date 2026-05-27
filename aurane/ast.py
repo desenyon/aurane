@@ -120,6 +120,37 @@ class ForwardBlock(ASTNode):
 
 
 @dataclass
+class GraphOp(ASTNode):
+    """
+    A single graph statement inside a graph-based forward definition.
+
+    Example DSL:
+        h1 = conv2d(x, 32, kernel=3).relu
+    """
+
+    target: str = ""
+    inputs: List[str] = field(default_factory=list)  # variable names
+    operation: Optional[LayerOperation] = field(default=None)  # set by the parser
+
+
+@dataclass
+class ForwardGraphBlock(ASTNode):
+    """
+    Graph-based forward definition with explicit wiring.
+
+    Example:
+        def forward(x):
+            h1 = dense(x, 64).relu
+            out = dense(h1, 10)
+            return out
+    """
+
+    parameter: str = "x"
+    nodes: List[GraphOp] = field(default_factory=list)
+    output_var: Optional[str] = None
+
+
+@dataclass
 class ModelNode(ASTNode):
     """
     Represents a 'model' block.
@@ -133,7 +164,7 @@ class ModelNode(ASTNode):
 
     name: str
     config: Dict[str, Any] = field(default_factory=dict)
-    forward_block: Optional[ForwardBlock] = None
+    forward_block: Optional[Union[ForwardBlock, ForwardGraphBlock]] = None
     custom_layers: List[CustomLayer] = field(default_factory=list)
 
 

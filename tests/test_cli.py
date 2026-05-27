@@ -3,10 +3,13 @@ Tests for the Aurane CLI module.
 """
 
 import os
+import json
+import argparse
 import pytest
 import tempfile
 import subprocess
 from pathlib import Path
+from aurane.cli.commands.watch import _compile_args_from_watch_args
 
 
 class TestCLIHelp:
@@ -115,6 +118,28 @@ class TestCLICheck:
             if "check" in result.stdout.lower() or result.returncode == 0:
                 assert True
 
+    def test_check_json_with_semantic_issue(self):
+        """Test JSON output when semantic analysis emits issue enums."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = os.path.join(tmpdir, "valid.aur")
+
+            with open(input_file, "w") as f:
+                f.write("""model ValidNet:
+    input_shape = (3, 32, 32)
+    def forward(x):
+        x -> conv2d(64, kernel=3).relu
+          -> dense(10)
+""")
+
+            result = subprocess.run(
+                ["python", "-m", "aurane.cli", "check", input_file, "--semantic", "--json"],
+                capture_output=True,
+                text=True,
+            )
+
+            assert result.returncode == 0
+            assert '"kind": "suggestion"' in result.stdout
+
 
 class TestCLIProfile:
     """Tests for CLI profile command."""
@@ -140,6 +165,61 @@ class TestCLIProfile:
 
             # Should output profile info
             # May contain params, flops, or layer info
+
+
+class TestCLIInspect:
+    """Tests for CLI inspect command."""
+
+    def test_inspect_stats_flag(self):
+        """Test inspect --stats prints program-level counts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = os.path.join(tmpdir, "model.aur")
+
+            with open(input_file, "w") as f:
+                f.write("""use torch
+
+dataset dummy:
+    train = True
+
+model Net:
+    def forward(x):
+        x -> dense(10)
+""")
+
+            result = subprocess.run(
+                ["python", "-m", "aurane.cli", "inspect", input_file, "--stats"],
+                capture_output=True,
+                text=True,
+            )
+
+            assert result.returncode == 0
+            assert "Models" in result.stdout
+            assert "Datasets" in result.stdout
+
+    def test_inspect_export_writes_ast_json(self):
+        """Test inspect --export writes a JSON AST file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = os.path.join(tmpdir, "model.aur")
+            export_file = os.path.join(tmpdir, "ast.json")
+
+            with open(input_file, "w") as f:
+                f.write("""use torch
+
+model Net:
+    def forward(x):
+        x -> dense(10)
+""")
+
+            result = subprocess.run(
+                ["python", "-m", "aurane.cli", "inspect", input_file, "--export", export_file],
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(Path(export_file).read_text())
+            assert result.returncode == 0
+            assert payload["uses"][0]["module"] == "torch"
+            assert payload["models"][0]["name"] == "Net"
 
 
 class TestCLIVisualize:
@@ -182,7 +262,59 @@ class TestCLIVisualize:
                 text=True,
             )
 
-            # May output DOT format
+            assert result.returncode == 0
+            assert 'op0 [label="Input:' in result.stdout
+            assert 'op1 [label="dense(10)' in result.stdout
+
+
+class TestCLILint:
+    """Tests for CLI lint command."""
+
+    def test_lint_auto_fix_does_not_change_assignments_named_train(self):
+        """Test lint does not add a colon to train config assignments."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = os.path.join(tmpdir, "dataset.aur")
+
+            with open(input_file, "w") as f:
+                f.write("""dataset dummy:
+    train = True
+    batch = 16
+""")
+
+            result = subprocess.run(
+                ["python", "-m", "aurane.cli", "lint", input_file, "--auto-fix"],
+                capture_output=True,
+                text=True,
+            )
+
+            assert result.returncode == 0
+            assert Path(input_file).read_text() == """dataset dummy:
+    train = True
+    batch = 16
+"""
+
+
+class TestCLIWatch:
+    """Tests for CLI watch command helpers."""
+
+    def test_watch_compile_args_include_compile_defaults(self):
+        """Test watch-mode compile args satisfy cmd_compile's expected namespace."""
+        watch_args = argparse.Namespace(
+            input="model.aur",
+            output="model.py",
+            backend="torch",
+            analyze=True,
+        )
+
+        compile_args = _compile_args_from_watch_args(watch_args)
+
+        assert compile_args.input == "model.aur"
+        assert compile_args.output == "model.py"
+        assert compile_args.output_override is None
+        assert compile_args.quiet is False
+        assert compile_args.validate is False
+        assert compile_args.optimize is False
+        assert compile_args.format is False
 
 
 class TestCLIVersion:

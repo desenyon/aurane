@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 from .parser import parse_aurane
-from .codegen_torch import generate_torch_code
+from .semantic_analyzer import analyze_semantics, format_semantic_issues
+from .type_checker import check_types, format_type_errors
+from .optimizer import optimize_ast
+from .backends import get_backend_generator
 
 
 class CompilationError(Exception):
@@ -18,7 +21,16 @@ class CompilationError(Exception):
     pass
 
 
-def compile_file(input_path: str, output_path: str, backend: str = "torch") -> None:
+def compile_file(
+    input_path: str,
+    output_path: str,
+    backend: str = "torch",
+    analyze: bool = False,
+    validate: bool = False,
+    optimize: bool = False,
+    opt_level: int = 1,
+    disable_cache: bool = False,
+) -> None:
     """
     Compile an Aurane source file to Python.
 
@@ -43,7 +55,15 @@ def compile_file(input_path: str, output_path: str, backend: str = "torch") -> N
 
     # Compile
     try:
-        python_code = compile_source(source, backend=backend)
+        python_code = compile_source(
+            source,
+            backend=backend,
+            analyze=analyze,
+            validate=validate,
+            optimize=optimize,
+            opt_level=opt_level,
+            disable_cache=disable_cache,
+        )
     except Exception as e:
         raise CompilationError(f"Compilation failed: {e}")
 
@@ -59,7 +79,15 @@ def compile_file(input_path: str, output_path: str, backend: str = "torch") -> N
     print(f"Successfully compiled {input_path} -> {output_path}")
 
 
-def compile_source(source: str, backend: str = "torch", disable_cache: bool = False) -> str:
+def compile_source(
+    source: str,
+    backend: str = "torch",
+    disable_cache: bool = False,
+    analyze: bool = False,
+    validate: bool = False,
+    optimize: bool = False,
+    opt_level: int = 1,
+) -> str:
     """
     Compile Aurane source code to Python.
 
@@ -79,7 +107,16 @@ def compile_source(source: str, backend: str = "torch", disable_cache: bool = Fa
 
     # Attempt to resolve from cache
     if not disable_cache:
-        source_hash = hashlib.md5(source.encode("utf-8")).hexdigest()
+        cache_key = {
+            "cache_schema": 2,
+            "source": source,
+            "backend": backend,
+            "analyze": analyze,
+            "validate": validate,
+            "optimize": optimize,
+            "opt_level": opt_level,
+        }
+        source_hash = hashlib.md5(str(cache_key).encode("utf-8")).hexdigest()
         cache_dir = Path(".aurane_cache") / backend
         cache_file = cache_dir / f"{source_hash}.py"
 
@@ -92,14 +129,42 @@ def compile_source(source: str, backend: str = "torch", disable_cache: bool = Fa
     except Exception as e:
         raise CompilationError(f"Parse error: {e}")
 
-    # Generate code based on backend
-    if backend == "torch":
+    # Optional passes before codegen.
+    if analyze:
         try:
-            python_code = generate_torch_code(ast)
+            semantic_result = analyze_semantics(ast)
+            if semantic_result.has_errors:
+                raise CompilationError(format_semantic_issues(semantic_result))
+        except CompilationError:
+            raise
         except Exception as e:
-            raise CompilationError(f"Code generation error: {e}")
-    else:
-        raise CompilationError(f"Unsupported backend: {backend}")
+            raise CompilationError(f"Semantic analysis failed: {e}")
+
+    if validate:
+        try:
+            type_result = check_types(ast)
+            if type_result.has_errors:
+                raise CompilationError(format_type_errors(type_result))
+        except CompilationError:
+            raise
+        except Exception as e:
+            raise CompilationError(f"Type checking failed: {e}")
+
+    if optimize:
+        try:
+            optimized = optimize_ast(ast, level=opt_level)
+            ast = optimized.program
+        except Exception as e:
+            raise CompilationError(f"Optimization failed: {e}")
+
+    # Generate code based on backend
+    try:
+        generator = get_backend_generator(backend)
+        python_code = generator(ast)
+    except KeyError as e:
+        raise CompilationError(str(e))
+    except Exception as e:
+        raise CompilationError(f"Code generation error: {e}")
 
     # Write to cache
     if not disable_cache:
