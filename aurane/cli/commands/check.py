@@ -11,7 +11,7 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Any, Dict
 
-from ..ui import console, RICH_AVAILABLE
+from ..ui import console, print_section, print_status, RICH_AVAILABLE
 from ..utils import validate_file
 from ...parser import parse_aurane, ParseError
 from ...semantic_analyzer import analyze_semantics, format_semantic_issues
@@ -50,10 +50,7 @@ def cmd_check(args) -> int:
         try:
             program = parse_aurane(source)
         except ParseError as e:
-            if use_rich:
-                console.print(f"[red][FAIL] Parse error:[/red] {e}")
-            else:
-                print(f"Parse error: {e}")
+            print_status("fail", "Parse error", str(e))
             return 1
 
         run_semantic = args.semantic or (not args.semantic and not args.types)
@@ -62,13 +59,16 @@ def cmd_check(args) -> int:
         semantic_result = None
         type_result = None
 
+        if not args.json:
+            print_section("Quality checks", str(file_path))
+
         if run_semantic:
             semantic_result = analyze_semantics(program)
             if args.json:
                 pass
             else:
                 if use_rich:
-                    console.print("\n[bold cyan]Semantic analysis[/bold cyan]")
+                    print_section("Semantic analysis")
                     console.print(format_semantic_issues(semantic_result))
                 else:
                     print("\nSemantic analysis")
@@ -80,15 +80,22 @@ def cmd_check(args) -> int:
                 pass
             else:
                 if use_rich:
-                    console.print("\n[bold cyan]Type checking[/bold cyan]")
+                    print_section("Type checking")
                     console.print(format_type_errors(type_result))
                 else:
                     print("\nType checking")
                     print(format_type_errors(type_result))
 
+        has_errors = False
+        if semantic_result is not None and semantic_result.has_errors:
+            has_errors = True
+        if type_result is not None and type_result.has_errors:
+            has_errors = True
+
         if args.json:
             payload: Dict[str, Any] = {
                 "file": str(file_path),
+                "ok": not has_errors,
                 "semantic": None,
                 "types": None,
             }
@@ -97,25 +104,15 @@ def cmd_check(args) -> int:
             if type_result is not None:
                 payload["types"] = _to_jsonable(type_result)
             print(json.dumps(payload, indent=2))
-
-        has_errors = False
-        if semantic_result is not None and semantic_result.has_errors:
-            has_errors = True
-        if type_result is not None and type_result.has_errors:
-            has_errors = True
+            return 1 if has_errors else 0
 
         if has_errors:
+            print_status("fail", "QC failed", "Run with --verbose for more diagnostic context.")
             return 1
 
-        if use_rich:
-            console.print("\n[green][OK] Checks passed[/green]")
-        else:
-            print("Checks passed")
+        print_status("ok", "QC passed", "Semantic and type/shape checks completed.")
         return 0
 
     except Exception as e:
-        if use_rich:
-            console.print(f"[red][FAIL] Error:[/red] {e}")
-        else:
-            print(f"Error: {e}")
+        print_status("fail", "Error", str(e))
         return 1

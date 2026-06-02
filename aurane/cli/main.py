@@ -2,9 +2,10 @@
 Modular entry point for Aurane CLI.
 """
 
-import sys
 import argparse
-from .ui import print_banner, console
+import sys
+
+from .ui import console, print_banner, print_status
 from .commands.compile import cmd_compile
 from .commands.check import cmd_check
 from .commands.inspect import cmd_inspect
@@ -243,17 +244,22 @@ def main():
             from rich.table import Table
             from rich.panel import Panel
 
-            table = Table(show_header=False, box=None, padding=(0, 2))
-            table.add_column("Command", style="cyan", width=15)
-            table.add_column("Description", style="dim")
+            table = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
+            table.add_column("Command", style="cyan", width=16)
+            table.add_column("Description", style="white")
 
-            table.add_row("[bold]Core[/bold]", "")
+            table.add_row("[bold]Core Workflow[/bold]", "")
             table.add_row("init", "Scaffold a new Aurane project")
             table.add_row("compile", "Compile .aur to Python")
-            table.add_row("check", "Run semantic/type checks on .aur")
             table.add_row("run", "Compile and run immediately")
             table.add_row("watch", "Watch file and recompile")
             table.add_row("interactive", "Start interactive REPL")
+
+            table.add_row("", "")
+            table.add_row("[bold]Quality Gates[/bold]", "")
+            table.add_row("check", "Run semantic and type/shape checks")
+            table.add_row("lint", "Lint and auto-fix Aurane files")
+            table.add_row("format", "Format Aurane source files")
 
             table.add_row("", "")
             table.add_row("[bold]Analysis[/bold]", "")
@@ -264,21 +270,18 @@ def main():
             table.add_row("benchmark", "Benchmark compilation time")
 
             table.add_row("", "")
-            table.add_row("[bold]Tools[/bold]", "")
-            table.add_row("format", "Format Aurane source files")
-            table.add_row("lint", "Lint and auto-fix Aurane files")
+            table.add_row("[bold]Maintenance[/bold]", "")
             table.add_row("clean", "Remove build artifacts")
 
             help_panel = Panel(
                 table,
-                title="[bold yellow]Available Commands[/bold yellow]",
+                title="[bold yellow]Command Center[/bold yellow]",
+                subtitle="[dim]aurane <command> --help[/dim]",
                 border_style="cyan",
                 expand=False,
             )
             console.print(help_panel)
-            console.print(
-                "\nRun [cyan]aurane <command> --help[/cyan] for more information on a command."
-            )
+            print_status("info", "Use `aurane check <file> --semantic --types` before shipping.")
         else:
             parser.print_help()
         return 0

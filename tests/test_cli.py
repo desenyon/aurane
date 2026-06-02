@@ -23,6 +23,15 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "aurane" in result.stdout.lower() or "usage" in result.stdout.lower()
 
+    def test_root_command_surface_groups_quality_gates(self):
+        """Test root command screen highlights the quality workflow."""
+        result = subprocess.run(["python", "-m", "aurane.cli"], capture_output=True, text=True)
+
+        assert result.returncode == 0
+        assert "Command Center" in result.stdout
+        assert "Quality Gates" in result.stdout
+        assert "aurane check <file> --semantic --types" in result.stdout
+
     def test_compile_help(self):
         """Test compile subcommand help."""
         result = subprocess.run(
@@ -139,6 +148,29 @@ class TestCLICheck:
 
             assert result.returncode == 0
             assert '"kind": "suggestion"' in result.stdout
+
+    def test_check_json_is_machine_readable(self):
+        """Test JSON output is not mixed with human UI text."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = os.path.join(tmpdir, "valid.aur")
+
+            with open(input_file, "w") as f:
+                f.write("""model ValidNet:
+    input_shape = (10,)
+    def forward(x):
+        x -> dense(10)
+""")
+
+            result = subprocess.run(
+                ["python", "-m", "aurane.cli", "check", input_file, "--json"],
+                capture_output=True,
+                text=True,
+            )
+
+            payload = json.loads(result.stdout)
+            assert result.returncode == 0
+            assert payload["ok"] is True
+            assert "QC passed" not in result.stdout
 
 
 class TestCLIProfile:

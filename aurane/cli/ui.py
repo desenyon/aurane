@@ -47,6 +47,41 @@ def print_banner():
     console.print(Panel(banner, border_style="cyan", expand=False))
 
 
+def print_section(title: str, subtitle: Optional[str] = None) -> None:
+    """Print a consistent command section heading."""
+    if not RICH_AVAILABLE or console is None:
+        print(title)
+        if subtitle:
+            print(subtitle)
+        return
+
+    console.print()
+    console.print(f"[bold cyan]{title}[/bold cyan]")
+    if subtitle:
+        console.print(f"[dim]{subtitle}[/dim]")
+
+
+def print_status(kind: str, message: str, detail: Optional[str] = None) -> None:
+    """Print a compact status line with consistent labels."""
+    labels = {
+        "ok": ("OK", "green"),
+        "fail": ("FAIL", "red"),
+        "warn": ("WARN", "yellow"),
+        "info": ("INFO", "cyan"),
+    }
+    label, color = labels.get(kind, labels["info"])
+
+    if not RICH_AVAILABLE or console is None:
+        print(f"{label}: {message}")
+        if detail:
+            print(detail)
+        return
+
+    console.print(f"[{color}][{label}][/{color}] {message}")
+    if detail:
+        console.print(f"[dim]{detail}[/dim]")
+
+
 def get_progress():
     """Create a standard progress bar."""
     if not RICH_AVAILABLE or console is None:
