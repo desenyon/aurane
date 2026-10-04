@@ -1,75 +1,46 @@
-use torch
-
-# Transformer for sequence modeling
-experiment TransformerLM:
+# Offline next-token training on synthetic data. This is a wiring example,
+# not a language-quality benchmark. Replace the source for real text training.
+experiment TransformerDemo:
     seed = 42
-    device = "auto"
-    backend = "torch"
+    device = "cpu"
 
-dataset wikitext_train:
-    from torchvision.datasets.WikiText2
-    root = "./data/wikitext"
-    train = True
-    batch = 64
-    sequence_length = 128
+vocabulary = 64
+width = 32
 
-dataset wikitext_val:
-    from torchvision.datasets.WikiText2
-    root = "./data/wikitext"
-    train = False
-    batch = 64
-    sequence_length = 128
+dataset token_train:
+    from aurane.data.SyntheticTokens
+    size = 64
+    sequence_length = 16
+    vocab_size = vocabulary
+    seed = 42
+    batch = 8
 
-model TransformerBlock:
-    input_shape = (128, 512)
-    def forward(x):
-        # Multi-head attention + FFN
-        x -> multihead_attention(heads=8, dim=512)
-          -> layer_norm()
-          -> dense(2048).relu
-          -> dropout(0.1)
-          -> dense(512)
-          -> layer_norm()
+dataset token_val:
+    from aurane.data.SyntheticTokens
+    size = 16
+    sequence_length = 16
+    vocab_size = vocabulary
+    seed = 43
+    batch = 8
+    shuffle = False
 
 model LanguageModel:
-    input_shape = (128,)
-    vocab_size = 50000
-    embedding_dim = 512
-    
-    def forward(x):
-        # Token + positional embeddings
-        x -> embedding(vocab_size, embedding_dim)
-          -> positional_encoding(max_len=128)
-          -> dropout(0.1)
-        
-        # Transformer layers
-        x -> multihead_attention(heads=8, dim=512).residual
-          -> layer_norm()
-          -> dense(2048).gelu
-          -> dense(512)
-          -> dropout(0.1)
-          -> layer_norm()
-        
-        x -> multihead_attention(heads=8, dim=512).residual
-          -> layer_norm()
-          -> dense(2048).gelu
-          -> dense(512)
-          -> dropout(0.1)
-          -> layer_norm()
-        
-        # Output projection
-        x -> dense(vocab_size)
+    input_shape = (16,)
+    def forward(tokens):
+        tokens -> embedding(vocabulary, width)
+               -> positional_encoding(max_len=32)
+               -> multihead_attention(heads=4, dim=width, causal=True).residual
+               -> layer_norm()
+               -> dense(64).gelu
+               -> dense(width)
+               -> layer_norm()
+               -> dense(vocabulary)
 
-train LanguageModel on wikitext_train:
-    validate_on = wikitext_val
-    loss = cross_entropy_with_label_smoothing(smoothing=0.1)
-    optimizer = adamw(lr=5e-4, betas=(0.9, 0.98), eps=1e-9)
-    epochs = 100
+train LanguageModel on token_train:
+    validate_on = token_val
+    loss = cross_entropy
+    optimizer = adamw(lr=0.001)
+    epochs = 2
     metrics = [perplexity, accuracy]
-    
-    scheduler = warmup_cosine(warmup_steps=4000, max_steps=100000)
+    scheduler = warmup_cosine(warmup_steps=2, max_steps=16)
     gradient_clip = 1.0
-    mixed_precision = true
-    
-    checkpoint_every = 5
-    log_every = 100

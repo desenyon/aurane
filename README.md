@@ -5,14 +5,14 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10+-2563eb.svg"></a>
   <a href="https://pytorch.org/"><img alt="PyTorch backend" src="https://img.shields.io/badge/backend-PyTorch-ee4c2c.svg"></a>
-  <a href="https://github.com/desenyon/aurane"><img alt="Version 2.0.0" src="https://img.shields.io/badge/release-v2.0.0-10b981.svg"></a>
+  <a href="https://github.com/desenyon/aurane"><img alt="Version 3.0.0" src="https://img.shields.io/badge/release-v3.0.0-10b981.svg"></a>
   <a href="https://github.com/psf/black"><img alt="Code style: Black" src="https://img.shields.io/badge/code%20style-black-111827.svg"></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-f59e0b.svg"></a>
 </p>
 
 <p align="center">
   <strong>Write focused model architecture in <code>.aur</code>. Ship readable PyTorch.</strong><br>
-  Aurane is a compiler-oriented machine learning DSL with parsing, semantic checks, type/shape inference, IR lowering, optimization, profiling, visualization, and a polished CLI workflow.
+  Aurane provides model compilation, graph checks, training code, profiling, visualization, and command-line tools.
 </p>
 
 ---
@@ -24,11 +24,13 @@ Aurane keeps model authoring compact without hiding the generated code. It is de
 ```mermaid
 flowchart LR
     A[".aur source"] --> B["Parser"]
-    B --> C["Semantic + Type Checks"]
-    C --> D["Optimizer"]
-    D --> E["IR Lowering"]
+    B --> S["Resolve Constants"]
+    S --> C["Optional Semantic + Type Checks"]
+    C --> D["Optional Safe AST Optimization"]
+    D --> E["Shape/Dtype Graph IR"]
     E --> F["PyTorch Generator"]
     F --> G["Readable Python"]
+    E --> H["IR Inspection / Profiling / Diagrams"]
 ```
 
 ## Quick Look
@@ -50,13 +52,13 @@ model TinyNet:
           -> dense(10)
 ```
 
-Compile it:
+Save the model above as `model.aur`, then compile it:
 
 ```bash
-aurane compile examples/simple.aur tiny_net.py --validate --format
+aurane compile model.aur tiny_net.py --validate --format
 ```
 
-Generated shape:
+Equivalent PyTorch structure (generated code also includes dtype setup and distinct graph value names):
 
 ```python
 class TinyNet(nn.Module):
@@ -95,7 +97,7 @@ Requirements:
 
 - Python 3.10+
 - Rich for the CLI experience
-- PyTorch 2.0+ for running generated ML programs
+- PyTorch 2.4+ for running generated ML programs
 
 ## CLI Surface
 
@@ -111,7 +113,12 @@ Requirements:
 | `lint` | Find and fix simple source issues | `aurane lint model.aur --auto-fix` |
 | `format` | Normalize Aurane source style | `aurane format examples/ --check` |
 
-## Release 2.0 Highlights
+## Version 3.0.0
+
+See the [3.0.0 changelog](CHANGELOG.md) for release and migration details,
+the [getting-started guide](docs/getting-started.md)
+for a tested offline workflow and the [language reference](docs/language-reference.md)
+for supported operations and migration changes.
 
 - **Graph-aware parser**: supports sequential chains and explicit graph-style forward definitions without confusing kwargs for assignments.
 - **Backend registry**: code generation now routes through a backend layer instead of hard-coding one path.
@@ -120,17 +127,18 @@ Requirements:
 - **Safer CLI exits**: `python -m aurane.cli` now preserves command return codes.
 - **Stable cache keys**: cached compilation output includes backend/options/schema information to avoid stale generated code.
 - **Better visualization**: Mermaid and DOT output preserve labels, shapes, and parameter counts.
-- **Release-grade examples**: the bundled CNN, ResNet, Transformer, GAN, and simple examples compile, check, and syntax-validate.
+- **Training workflows**: ordered multi-job execution, declarative image transforms, weighted objectives, binary/multiclass metrics, held-out tests, atomic checkpoints and GAN image exports.
+- **Runtime coverage**: all five examples execute training with small offline fixtures. Separate tests verify outputs, gradients, metrics, checkpoint/resume, GAN phases and CLI failure paths. Network downloads, long training and CUDA execution are outside local QA.
 
 ## Language Features
 
 | Area | Supported |
 | --- | --- |
-| Models | `model`, `input_shape`, sequential forward chains, graph forward blocks |
-| Layers | `conv2d`, `dense`, `linear`, `flatten`, `maxpool`, `avgpool`, `dropout`, `batch_norm`, `batchnorm`, `reshape`, `embedding`, `multihead_attention`, `layer_norm`, `positional_encoding` |
+| Models | `model`, `input_shape`, `input_dtype`, padding masks, sequential forward chains, graph forward blocks |
+| Layers | `conv1d`, `conv2d`, `lstm`, `gru`, `upsample`, `dense`, `linear`, `flatten`, `maxpool`, `avgpool`, `dropout`, `batch_norm`, `batchnorm`, `reshape`, `embedding`, `multihead_attention`, `layer_norm`, `positional_encoding` |
 | Activations | `relu`, `gelu`, `sigmoid`, `tanh`, `softmax`, `leaky_relu`, `residual` |
-| Analysis | semantic issues, type/shape inference, parameter counts, FLOPs estimates |
-| Output | idiomatic PyTorch modules and training scaffolds |
+| Analysis | semantic issues, shape/dtype inference, source spans, parameter counts, FLOPs estimates |
+| Output | PyTorch modules, standard/GAN training, metrics, standard/GAN checkpoints and resume, held-out evaluation |
 
 ## Examples
 
@@ -138,8 +146,8 @@ The `examples/` directory includes:
 
 - `simple.aur` - compact CNN starter
 - `mnist.aur` - MNIST training pipeline
-- `resnet.aur` - deeper convolutional classifier
-- `transformer.aur` - language-model style architecture
+- `resnet.aur` - classifier with explicit residual branches
+- `transformer.aur` - offline causal token model with synthetic data
 - `gan.aur` - generator/discriminator pair
 
 Run the full example smoke path:
@@ -169,12 +177,28 @@ aurane/
 
 ## Development
 
+The [rework plan](docs/rework-plan.md) tracks the current feature audit,
+acceptance criteria, completed repairs, and remaining work.
+
 ```bash
-uv run --extra dev black --check aurane tests
-uv run --extra dev mypy aurane
+uv run --extra dev black --check aurane tests scripts
+uv run --extra dev mypy aurane --ignore-missing-imports
 uv run --extra dev pytest -q
 uv build
 ```
+
+Run generated-program QA with PyTorch installed:
+
+```bash
+pip install -e ".[dev]" torch torchvision
+python -m pytest tests/ -q
+```
+
+These offline suites exercise training, evaluation, checkpoint restoration and
+CLI behavior, execute forward and backward passes, and compare optimized
+and unoptimized outputs, gradients, and state. Optimization levels 1 and 2
+currently apply only verified duplicate-ReLU elimination. They preserve dropout,
+normalization, dense layers, and pooling; training-safe fusion is future work.
 
 Release smoke:
 
@@ -188,10 +212,13 @@ done
 
 ## Documentation
 
+- [Documentation Index](docs/README.md)
+- [Changelog and Migration](CHANGELOG.md)
 - [Getting Started](docs/getting-started.md)
 - [CLI Reference](docs/cli-commands.md)
 - [Language Reference](docs/language-reference.md)
 - [Examples Guide](docs/examples.md)
+- [QA Evidence and Limits](docs/qa-report.md)
 
 ## License
 

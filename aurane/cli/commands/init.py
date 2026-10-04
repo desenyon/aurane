@@ -41,7 +41,11 @@ experiment Default:
     device = "auto"
 
 dataset my_data:
-    batch = 32
+    from torchvision.datasets.FakeData
+    size = 32
+    image_size = (1, 28, 28)
+    num_classes = 10
+    batch = 16
 
 model MyModel:
     input_shape = (1, 28, 28)
@@ -51,9 +55,8 @@ model MyModel:
           -> dense(10)
 
 train MyModel on my_data:
-    epochs = 5
-    lr = 0.001
-    optimizer = "adam"
+    epochs = 1
+    optimizer = adam(lr=0.001)
 """
         main_aur_path.write_text(main_aur_content)
 
@@ -61,6 +64,9 @@ train MyModel on my_data:
         readme_content = f"""# {project_name}
 
 A machine learning project built with Aurane DSL.
+
+The starter trains on 32 synthetic images without downloading data.
+Install runtime dependencies with `pip install 'aurane[torch]'`.
 
 ## Usage
 

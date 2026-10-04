@@ -5,7 +5,7 @@ Performs static type analysis and shape inference to catch errors
 before code generation.
 """
 
-from typing import List, Dict, Any, Optional, Tuple, Set
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -15,10 +15,17 @@ from .ast import (
     DatasetNode,
     TrainNode,
     LayerOperation,
-    ForwardBlock,
     ForwardGraphBlock,
 )
-from .shapes import infer_output_shape, to_int
+from .shapes import infer_output_shape
+from .symbols import resolve_program, ResolutionError
+from .ir import lower_model
+from .diagnostics import SourceSpan
+from .configuration import (
+    validate_program_configuration,
+    training_references,
+    validate_training_options,
+)
 
 
 class TypeKind(Enum):
@@ -49,6 +56,8 @@ class TensorType:
 
     def is_compatible(self, other: "TensorType") -> bool:
         """Check if two tensor types are compatible."""
+        if self.dtype != "unknown" and other.dtype != "unknown" and self.dtype != other.dtype:
+            return False
         if self.shape is None or other.shape is None:
             return True
         if len(self.shape) != len(other.shape):
@@ -67,6 +76,7 @@ class TypeAnalysisError:
     location: str
     severity: str = "error"  # "error", "warning", "info"
     suggestion: Optional[str] = None
+    span: Optional[SourceSpan] = None
 
 
 @dataclass
@@ -105,6 +115,20 @@ class TypeChecker:
 
     def check(self) -> TypeCheckResult:
         """Run all type checking passes."""
+        try:
+            self.program = resolve_program(self.program)
+        except ResolutionError as error:
+            self.result.errors.append(
+                TypeAnalysisError(str(error), "constants", span=getattr(error, "span", None))
+            )
+            return self.result
+        try:
+            validate_program_configuration(self.program)
+        except ValueError as error:
+            self.result.errors.append(
+                TypeAnalysisError(str(error), "program", span=getattr(error, "span", None))
+            )
+            return self.result
         self._collect_symbols()
         self._check_references()
         self._check_models()
@@ -128,24 +152,33 @@ class TypeChecker:
         model_names = {m.name for m in self.program.models}
         dataset_names = {d.name for d in self.program.datasets}
 
-        for train in self.program.trains:
-            if train.model_name not in model_names:
+        definitions = {"model": model_names, "dataset": dataset_names}
+        for train in [*self.program.trains, *self.program.train_gans]:
+            try:
+                validate_training_options(train)
+            except ValueError as error:
                 self.result.errors.append(
                     TypeAnalysisError(
-                        message=f"Undefined model '{train.model_name}'",
-                        location=f"train {train.model_name} on {train.dataset_name}",
-                        suggestion=f"Define model '{train.model_name}' or use one of: {', '.join(model_names)}",
+                        str(error), f"line {train.line}", span=getattr(error, "span", None)
                     )
                 )
-
-            if train.dataset_name not in dataset_names:
-                self.result.errors.append(
-                    TypeAnalysisError(
-                        message=f"Undefined dataset '{train.dataset_name}'",
-                        location=f"train {train.model_name} on {train.dataset_name}",
-                        suggestion=f"Define dataset '{train.dataset_name}' or use one of: {', '.join(dataset_names)}",
+                continue
+            for kind, name in training_references(train):
+                if name not in definitions[kind]:
+                    self.result.errors.append(
+                        TypeAnalysisError(
+                            f"Undefined {kind} '{name}'",
+                            f"train at line {train.line}",
+                            span=next(
+                                (
+                                    train.config_spans[key]
+                                    for key in ("validate_on", "test_on")
+                                    if train.config.get(key) == name and key in train.config_spans
+                                ),
+                                SourceSpan.from_node(train),
+                            ),
+                        )
                     )
-                )
 
     def _check_models(self):
         """Check model definitions."""
@@ -201,107 +234,24 @@ class TypeChecker:
 
         shapes: Dict[str, TensorType] = {"input": TensorType(shape=input_shape_tuple)}
 
-        if isinstance(model.forward_block, ForwardGraphBlock):
-            shape_env: Dict[str, TensorType] = {
-                model.forward_block.parameter: TensorType(shape=input_shape_tuple)
-            }
-            defined_vars = {model.forward_block.parameter}
-
-            for idx, node in enumerate(model.forward_block.nodes):
-                op = node.operation
-                if op is None:
-                    continue
-
-                op_name = op.operation.lower()
-                node_inputs = node.inputs
-
-                undefined = [v for v in node_inputs if v not in defined_vars]
-                if undefined:
-                    self.result.errors.append(
-                        TypeAnalysisError(
-                            message=f"Undefined tensor variable(s) in {op_name}: {', '.join(undefined)}",
-                            location=f"model {model.name}, node {idx}",
-                        )
-                    )
-                    continue
-
-                if input_shape_tuple is None:
-                    inferred_shape: Optional[Tuple[int, ...]] = None
-                elif op_name == "add":
-                    # add(a,b) => same shape as first input
-                    s0 = shape_env[node_inputs[0]].shape
-                    inferred_shape = s0
-                    # Optional compatibility check if both known.
-                    if len(node_inputs) >= 2:
-                        s1 = shape_env[node_inputs[1]].shape
-                        if s0 is not None and s1 is not None and len(s0) == len(s1):
-                            for d0, d1 in zip(s0, s1):
-                                if d0 != -1 and d1 != -1 and d0 != d1:
-                                    self.result.errors.append(
-                                        TypeAnalysisError(
-                                            message=f"add shape mismatch: {s0} vs {s1}",
-                                            location=f"model {model.name}, node {idx}",
-                                        )
-                                    )
-                                    break
-                elif op_name == "concat":
-                    dim = to_int(op.kwargs.get("dim", 1), 1)
-                    raw_shapes = [shape_env[v].shape for v in node_inputs]
-                    if any(s is None for s in raw_shapes):
-                        inferred_shape = None
-                    else:
-                        shapes_in = [s for s in raw_shapes if s is not None]
-                        first = shapes_in[0]
-                        if not all(len(s) == len(first) for s in shapes_in):
-                            inferred_shape = None
-                        else:
-                            out_dims = list(first)
-                            dim_sum = 0
-                            for s in shapes_in:
-                                d = s[dim] if len(s) > dim else -1
-                                if d == -1 or dim_sum == -1:
-                                    dim_sum = -1
-                                    break
-                                dim_sum += d
-                            out_dims[dim] = dim_sum
-                            inferred_shape = tuple(out_dims)
-                else:
-                    in_shape = shape_env[node_inputs[0]].shape
-                    if in_shape is None:
-                        inferred_shape = None
-                    else:
-                        inferred_shape = self._infer_shape(op, in_shape)
-
-                shape_env[node.target] = TensorType(shape=inferred_shape)
-                defined_vars.add(node.target)
-                shapes[f"layer_{idx}"] = TensorType(shape=inferred_shape)
-
-            output_var = model.forward_block.output_var or (
-                model.forward_block.nodes[-1].target
-                if model.forward_block.nodes
-                else model.forward_block.parameter
+        try:
+            graph = lower_model(model)
+            shapes["input"].dtype = graph.inputs[0].type_hint or "unknown"
+            for index, node in enumerate(graph.nodes):
+                assert node.output is not None
+                shapes[f"layer_{index}"] = TensorType(
+                    shape=node.output.shape, dtype=node.output.type_hint or "unknown"
+                )
+            shapes["output"] = TensorType(
+                shape=graph.outputs[0].shape, dtype=graph.outputs[0].type_hint or "unknown"
             )
-            out_shape = shape_env.get(output_var, TensorType(shape=None)).shape
-            shapes["output"] = TensorType(shape=out_shape)
-        else:
-            current_shape: Optional[Tuple[int, ...]] = input_shape_tuple
-            for idx, op in enumerate(model.forward_block.operations):
-                try:
-                    if current_shape is None:
-                        current_shape = None
-                    else:
-                        current_shape = self._infer_shape(op, current_shape)
-                    shapes[f"layer_{idx}"] = TensorType(shape=current_shape)
-                except Exception as e:
-                    self.result.errors.append(
-                        TypeAnalysisError(
-                            message=f"Shape inference failed at layer {idx}: {e}",
-                            location=f"model {model.name}, operation {op.operation}",
-                        )
-                    )
-                    break
-
-            shapes["output"] = TensorType(shape=current_shape)
+        except (ValueError, TypeError, IndexError, ZeroDivisionError) as error:
+            self.result.errors.append(
+                TypeAnalysisError(
+                    str(error), f"model {model.name}", span=getattr(error, "span", None)
+                )
+            )
+            return
 
         self.model_shapes[model.name] = shapes
         self.result.inferred_types[model.name] = shapes

@@ -2,7 +2,7 @@
 Watch command for Aurane CLI.
 """
 
-import time
+from queue import Queue, Empty
 import argparse
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
@@ -29,7 +29,7 @@ def _compile_args_from_watch_args(args):
     )
 
 
-def cmd_watch(args):
+def cmd_watch(args) -> int:
     """Watch mode - auto-recompile on changes."""
     if not RICH_AVAILABLE or console is None:
         print("Watch mode requires 'rich' library. Install with: pip install rich")
@@ -43,39 +43,45 @@ def cmd_watch(args):
         console.print("Install with: pip install watchdog")
         return 1
 
-    input_path = validate_file(args.input, [".aur"])
+    input_path = validate_file(args.input, [".aur"]).absolute()
+    changes: Queue[None] = Queue()
 
     class AuraneFileHandler(FileSystemEventHandler):
-        def __init__(self):
-            self.last_compile = 0
-
-        def on_modified(self, event):
-            if event.src_path == str(input_path.absolute()):
-                current = time.time()
-                if current - self.last_compile < 0.5:
-                    return
-                self.last_compile = current
-
-                console.print(f"\n[yellow][RELOAD] File changed, recompiling...[/yellow]")
-                cmd_compile(_compile_args_from_watch_args(args))
+        def on_any_event(self, event):
+            if event.is_directory or event.event_type not in {
+                "modified",
+                "created",
+                "deleted",
+                "moved",
+            }:
+                return
+            paths = (event.src_path, getattr(event, "dest_path", ""))
+            if any(path and Path(path).absolute() == input_path for path in paths):
+                changes.put(None)
 
     console.print(f"[cyan]Watching:[/cyan] {args.input}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-
-    # Initial compile
-    cmd_compile(_compile_args_from_watch_args(args))
-
-    event_handler = AuraneFileHandler()
     observer = Observer()
-    observer.schedule(event_handler, str(input_path.parent), recursive=False)
+    observer.schedule(AuraneFileHandler(), str(input_path.parent), recursive=False)
     observer.start()
-
     try:
+        cmd_compile(_compile_args_from_watch_args(args))
         while True:
-            time.sleep(1)
+            try:
+                changes.get(timeout=0.5)
+            except Empty:
+                continue
+            # Compile after the final event in a burst, never drop its last save.
+            while True:
+                try:
+                    changes.get(timeout=0.15)
+                except Empty:
+                    break
+            console.print("\n[yellow][RELOAD] File changed, recompiling...[/yellow]")
+            cmd_compile(_compile_args_from_watch_args(args))
     except KeyboardInterrupt:
-        observer.stop()
         console.print("\n[yellow]Stopped watching[/yellow]")
-
-    observer.join()
+    finally:
+        observer.stop()
+        observer.join()
     return 0

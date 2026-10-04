@@ -5,7 +5,6 @@ Interactive REPL for Aurane CLI.
 from ..ui import console, RICH_AVAILABLE, print_banner
 
 try:
-    from rich.prompt import Prompt
     from rich.syntax import Syntax
 except ImportError:
     pass
@@ -31,7 +30,8 @@ def cmd_interactive(args):
                 if not code_buffer
                 else "[bold cyan].......[/bold cyan]"
             )
-            line = Prompt.ask(prompt)
+            console.print(prompt, end=" ")
+            line = input()  # Preserve indentation; rich Prompt strips leading whitespace.
 
             if not line.strip():
                 continue

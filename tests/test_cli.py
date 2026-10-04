@@ -8,6 +8,7 @@ import argparse
 import pytest
 import tempfile
 import subprocess
+import sys
 from pathlib import Path
 from aurane.cli.commands.watch import _compile_args_from_watch_args
 
@@ -18,14 +19,16 @@ class TestCLIHelp:
     def test_help_command(self):
         """Test that help command works."""
         result = subprocess.run(
-            ["python", "-m", "aurane.cli", "--help"], capture_output=True, text=True
+            [sys.executable, "-m", "aurane.cli", "--help"], capture_output=True, text=True
         )
         assert result.returncode == 0
         assert "aurane" in result.stdout.lower() or "usage" in result.stdout.lower()
 
     def test_root_command_surface_groups_quality_gates(self):
         """Test root command screen highlights the quality workflow."""
-        result = subprocess.run(["python", "-m", "aurane.cli"], capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, "-m", "aurane.cli"], capture_output=True, text=True
+        )
 
         assert result.returncode == 0
         assert "Command Center" in result.stdout
@@ -35,7 +38,9 @@ class TestCLIHelp:
     def test_compile_help(self):
         """Test compile subcommand help."""
         result = subprocess.run(
-            ["python", "-m", "aurane.cli", "compile", "--help"], capture_output=True, text=True
+            [sys.executable, "-m", "aurane.cli", "compile", "--help"],
+            capture_output=True,
+            text=True,
         )
         # Should not crash
         assert result.returncode == 0
@@ -58,7 +63,7 @@ class TestCLICompile:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file, "-o", output_file],
+                [sys.executable, "-m", "aurane.cli", "compile", input_file, "-o", output_file],
                 capture_output=True,
                 text=True,
             )
@@ -79,7 +84,7 @@ class TestCLICompile:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file],
+                [sys.executable, "-m", "aurane.cli", "compile", input_file],
                 capture_output=True,
                 text=True,
             )
@@ -91,7 +96,7 @@ class TestCLICompile:
     def test_compile_missing_file(self):
         """Test compiling a missing file."""
         result = subprocess.run(
-            ["python", "-m", "aurane.cli", "compile", "nonexistent.aur"],
+            [sys.executable, "-m", "aurane.cli", "compile", "nonexistent.aur"],
             capture_output=True,
             text=True,
         )
@@ -120,7 +125,9 @@ class TestCLICheck:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "check", input_file], capture_output=True, text=True
+                [sys.executable, "-m", "aurane.cli", "check", input_file],
+                capture_output=True,
+                text=True,
             )
 
             # Should succeed
@@ -141,7 +148,7 @@ class TestCLICheck:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "check", input_file, "--semantic", "--json"],
+                [sys.executable, "-m", "aurane.cli", "check", input_file, "--semantic", "--json"],
                 capture_output=True,
                 text=True,
             )
@@ -162,7 +169,7 @@ class TestCLICheck:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "check", input_file, "--json"],
+                [sys.executable, "-m", "aurane.cli", "check", input_file, "--json"],
                 capture_output=True,
                 text=True,
             )
@@ -190,7 +197,7 @@ class TestCLIProfile:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "profile", input_file],
+                [sys.executable, "-m", "aurane.cli", "profile", input_file],
                 capture_output=True,
                 text=True,
             )
@@ -219,7 +226,7 @@ model Net:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "inspect", input_file, "--stats"],
+                [sys.executable, "-m", "aurane.cli", "inspect", input_file, "--stats"],
                 capture_output=True,
                 text=True,
             )
@@ -243,7 +250,15 @@ model Net:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "inspect", input_file, "--export", export_file],
+                [
+                    sys.executable,
+                    "-m",
+                    "aurane.cli",
+                    "inspect",
+                    input_file,
+                    "--export",
+                    export_file,
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -270,7 +285,15 @@ class TestCLIVisualize:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "visualize", input_file, "--format", "mermaid"],
+                [
+                    sys.executable,
+                    "-m",
+                    "aurane.cli",
+                    "visualize",
+                    input_file,
+                    "--format",
+                    "mermaid",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -289,7 +312,7 @@ class TestCLIVisualize:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "visualize", input_file, "--format", "dot"],
+                [sys.executable, "-m", "aurane.cli", "visualize", input_file, "--format", "dot"],
                 capture_output=True,
                 text=True,
             )
@@ -314,7 +337,7 @@ class TestCLILint:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "lint", input_file, "--auto-fix"],
+                [sys.executable, "-m", "aurane.cli", "lint", input_file, "--auto-fix"],
                 capture_output=True,
                 text=True,
             )
@@ -355,7 +378,7 @@ class TestCLIVersion:
     def test_version_flag(self):
         """Test --version flag."""
         result = subprocess.run(
-            ["python", "-m", "aurane.cli", "--version"], capture_output=True, text=True
+            [sys.executable, "-m", "aurane.cli", "--version"], capture_output=True, text=True
         )
 
         # Should show version or not crash
@@ -368,7 +391,7 @@ class TestCLIErrors:
     def test_invalid_command(self):
         """Test invalid subcommand."""
         result = subprocess.run(
-            ["python", "-m", "aurane.cli", "invalidcommand"], capture_output=True, text=True
+            [sys.executable, "-m", "aurane.cli", "invalidcommand"], capture_output=True, text=True
         )
 
         # Should show error or help
@@ -388,7 +411,7 @@ class TestCLIErrors:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file],
+                [sys.executable, "-m", "aurane.cli", "compile", input_file],
                 capture_output=True,
                 text=True,
             )
@@ -410,7 +433,7 @@ class TestCLIWithExamples:
         simple_file = examples_dir / "simple.aur"
         if simple_file.exists():
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", str(simple_file)],
+                [sys.executable, "-m", "aurane.cli", "compile", str(simple_file)],
                 capture_output=True,
                 text=True,
             )
@@ -421,7 +444,7 @@ class TestCLIWithExamples:
         mnist_file = examples_dir / "mnist.aur"
         if mnist_file.exists():
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", str(mnist_file)],
+                [sys.executable, "-m", "aurane.cli", "compile", str(mnist_file)],
                 capture_output=True,
                 text=True,
             )
@@ -432,7 +455,7 @@ class TestCLIWithExamples:
         resnet_file = examples_dir / "resnet.aur"
         if resnet_file.exists():
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", str(resnet_file)],
+                [sys.executable, "-m", "aurane.cli", "compile", str(resnet_file)],
                 capture_output=True,
                 text=True,
             )
@@ -454,7 +477,7 @@ class TestCLIOutputFormats:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file, "--backend", "torch"],
+                [sys.executable, "-m", "aurane.cli", "compile", input_file, "--backend", "torch"],
                 capture_output=True,
                 text=True,
             )
@@ -480,7 +503,16 @@ class TestCLIQuiet:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file, "-o", output_file, "--quiet"],
+                [
+                    sys.executable,
+                    "-m",
+                    "aurane.cli",
+                    "compile",
+                    input_file,
+                    "-o",
+                    output_file,
+                    "--quiet",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -503,7 +535,7 @@ class TestCLIVerbose:
 """)
 
             result = subprocess.run(
-                ["python", "-m", "aurane.cli", "compile", input_file, "--verbose"],
+                [sys.executable, "-m", "aurane.cli", "compile", input_file, "--verbose"],
                 capture_output=True,
                 text=True,
             )

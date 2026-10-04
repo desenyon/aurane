@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 from ..ui import console, print_section, print_status, RICH_AVAILABLE
 from ..utils import validate_file
-from ...parser import parse_aurane, ParseError
+from ...parser import parse_aurane
 from ...semantic_analyzer import analyze_semantics, format_semantic_issues
 from ...type_checker import check_types, format_type_errors
 
@@ -47,11 +47,7 @@ def cmd_check(args) -> int:
         file_path = validate_file(args.input, [".aur"])
         source = file_path.read_text(encoding="utf-8")
 
-        try:
-            program = parse_aurane(source)
-        except ParseError as e:
-            print_status("fail", "Parse error", str(e))
-            return 1
+        program = parse_aurane(source)
 
         run_semantic = args.semantic or (not args.semantic and not args.types)
         run_types = args.types or (not args.semantic and not args.types)
@@ -114,5 +110,23 @@ def cmd_check(args) -> int:
         return 0
 
     except Exception as e:
-        print_status("fail", "Error", str(e))
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "file": str(args.input),
+                        "ok": False,
+                        "semantic": None,
+                        "types": None,
+                        "error": {
+                            "kind": type(e).__name__,
+                            "message": str(e),
+                            "span": _to_jsonable(getattr(e, "span", None)),
+                        },
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print_status("fail", "Error", str(e))
         return 1

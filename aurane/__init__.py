@@ -4,10 +4,11 @@ Aurane - ML-Oriented DSL that Transpiles to Python
 A domain-specific language for writing ML code that compiles to idiomatic Python.
 """
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 from .compiler import compile_file, compile_source, CompilationError
 from .parser import parse_aurane, ParseError
+from .symbols import resolve_program, ResolutionError
 from .type_checker import check_types, TypeCheckResult, TypeChecker
 from .optimizer import optimize_ast, OptimizationResult
 from .semantic_analyzer import analyze_semantics, SemanticAnalysisResult
@@ -26,6 +27,8 @@ __all__ = [
     "parse_aurane",
     "CompilationError",
     "ParseError",
+    "resolve_program",
+    "ResolutionError",
     # Type checking
     "check_types",
     "TypeCheckResult",

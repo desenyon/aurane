@@ -11,7 +11,9 @@ dataset mnist_images:
     from torchvision.datasets.MNIST
     root = "./data"
     train = True
+    download = True
     batch = 128
+    transforms = [ToTensor(), Normalize((0.5,), (0.5,))]
 
 # Generator network
 model Generator:
@@ -62,5 +64,8 @@ train_gan Generator and Discriminator on mnist_images:
     generate_samples_every = 10
     num_samples = 64
     save_dir = "./generated_images"
+    sample_format = "both"
+    checkpoint_dir = "./checkpoints/gan"
+    checkpoint_every = 10
     
     metrics = [generator_loss, discriminator_loss, real_score, fake_score]

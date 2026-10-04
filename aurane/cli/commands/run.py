@@ -12,6 +12,7 @@ from ...compiler import compile_to_temp
 
 def cmd_run(args):
     """Compile and run an Aurane file."""
+    temp_path = None
     try:
         input_file = validate_file(args.input, [".aur"])
         source = input_file.read_text(encoding="utf-8")
@@ -35,9 +36,7 @@ def cmd_run(args):
         result = subprocess.run([sys.executable, str(temp_path)], cwd=input_file.parent)
 
         # Clean up temporary file
-        if not args.keep_temp:
-            temp_path.unlink()
-        else:
+        if args.keep_temp:
             if RICH_AVAILABLE and console:
                 console.print("-" * 60)
                 console.print(f"[yellow]Temporary file kept at:[/yellow] {temp_path}")
@@ -45,11 +44,16 @@ def cmd_run(args):
                 print("-" * 60)
                 print(f"Temporary file kept at: {temp_path}")
 
-        return result.returncode
+        return result.returncode if result.returncode >= 0 else 128 - result.returncode
 
+    except KeyboardInterrupt:
+        return 130
     except Exception as e:
         if RICH_AVAILABLE and console:
             console.print(f"[red][FAIL] Error:[/red] {e}")
         else:
             print(f"Error: {e}")
         return 1
+    finally:
+        if temp_path is not None and not args.keep_temp:
+            temp_path.unlink(missing_ok=True)

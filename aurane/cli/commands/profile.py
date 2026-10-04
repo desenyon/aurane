@@ -4,7 +4,7 @@ Profile command for Aurane CLI.
 
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
-from ...parser import parse_aurane
+from ...symbols import parse_resolved
 from ...profiler import profile_model, format_profile
 
 
@@ -15,7 +15,7 @@ def cmd_profile(args):
     try:
         input_file = validate_file(args.input, [".aur"])
         source = input_file.read_text(encoding="utf-8")
-        program = parse_aurane(source)
+        program = parse_resolved(source)
 
         if not program.models:
             if use_rich:

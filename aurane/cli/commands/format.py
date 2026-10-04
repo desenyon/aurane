@@ -47,28 +47,9 @@ def cmd_format(args):
 
 
 def format_aurane_code(code: str) -> str:
-    """Format Aurane code with consistent style."""
-    lines = code.split("\n")
-    formatted = []
-    indent_level = 0
+    """Normalize trailing whitespace without changing significant indentation.
 
-    for line in lines:
-        stripped = line.strip()
-
-        if not stripped or stripped.startswith("#"):
-            formatted.append(line)
-            continue
-
-        if stripped.startswith(("def ", "model ", "dataset ", "train ", "experiment ")):
-            indent_level = 0
-
-        if "->" in stripped:
-            indent_level = 2
-        elif stripped.endswith(":"):
-            formatted.append("    " * indent_level + stripped)
-            indent_level += 1
-            continue
-
-        formatted.append("    " * indent_level + stripped)
-
-    return "\n".join(formatted)
+    Aurane's indentation carries meaning. A formatter must preserve the user's
+    block structure and continuation lines, including graph and GAN blocks.
+    """
+    return "\n".join(line.rstrip() for line in code.splitlines()) + ("\n" if code else "")

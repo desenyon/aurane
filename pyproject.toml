@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aurane"
-version = "2.0.0"
+version = "3.0.0"
 description = "A modern domain-specific language for machine learning that compiles to PyTorch"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,8 +35,8 @@ dependencies = [
 
 [project.optional-dependencies]
 torch = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
     "matplotlib>=3.5.0",
     "tensorboard>=2.11.0",
 ]
@@ -69,3 +69,9 @@ python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+# Runtime dependencies are optional; check Aurane itself without following
+# platform-specific PyTorch / NumPy stubs from the host Python installation.
+[[tool.mypy.overrides]]
+module = ["torch"]
+follow_imports = "skip"

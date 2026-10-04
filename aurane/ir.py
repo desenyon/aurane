@@ -1,109 +1,163 @@
-"""
-Intermediate representation (IR) for Aurane models.
-
-The IR is designed to represent forward computation as a (for now) directed
-graph of operator nodes with explicit value wiring. Future DSL versions can
-lower into this IR and backends can lower IR into their target runtimes.
-"""
-
-from __future__ import annotations
+"""Forward graphs shared by code generation, checking, profiling and rendering."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import builtins
+from typing import Any, Dict, List, Optional, Tuple
 
-from .ast import ForwardBlock, ForwardGraphBlock
+from .ast import ForwardBlock, ForwardGraphBlock, LayerOperation
+from .shapes import infer_graph_output_shape
+from .diagnostics import SourceSpan, LocatedError
+from .dtypes import model_dtypes, infer_dtype
 
 
 @dataclass(frozen=True)
 class IRValue:
-    """A named value in the IR graph."""
+    """A distinct tensor value; shape excludes its runtime batch dimension."""
 
     name: str
-    # Optional type annotation for future use (tensor shape/dtype, etc.).
     type_hint: Optional[str] = None
+    shape: Optional[Tuple[int, ...]] = None
 
 
 @dataclass
 class IRNode:
-    """A node in the IR graph."""
-
     op_name: str
     inputs: List[IRValue] = field(default_factory=list)
     args: List[Any] = field(default_factory=list)
     kwargs: Dict[str, Any] = field(default_factory=dict)
     activation: Optional[str] = None
     output: Optional[IRValue] = None
+    line: int = 0
+    column: int = 0
+    end_line: int = 0
+    end_column: int = 0
+
+    def to_operation(self) -> LayerOperation:
+        return LayerOperation(
+            operation=self.op_name,
+            args=list(self.args),
+            kwargs=dict(self.kwargs),
+            activation=self.activation,
+            line=self.line,
+            column=self.column,
+            end_line=self.end_line,
+            end_column=self.end_column,
+        )
 
 
 @dataclass
 class IRGraph:
-    """IR representation of a forward computation graph."""
-
     nodes: List[IRNode] = field(default_factory=list)
     inputs: List[IRValue] = field(default_factory=list)
     outputs: List[IRValue] = field(default_factory=list)
 
 
-def lower_sequential_forward(forward_block, input_value_name: Optional[str] = None) -> IRGraph:
-    """
-    Lower a simple sequential forward chain into an IR graph.
+def lower_forward_block(
+    forward_block,
+    input_shape: Optional[Tuple[int, ...]] = None,
+    *,
+    input_dtype: Optional[str] = None,
+    parameter_dtype: str = "float32",
+) -> IRGraph:
+    """Resolve wiring and optional shapes while preserving each value's identity."""
+    if not isinstance(forward_block, (ForwardBlock, ForwardGraphBlock)):
+        raise TypeError(f"Unsupported forward block type: {type(forward_block)}")
+    input_value = IRValue(forward_block.parameter, type_hint=input_dtype, shape=input_shape)
+    graph = IRGraph(inputs=[input_value])
+    env = {forward_block.parameter: input_value}
+    used_names = {input_value.name, "self", "torch", "nn", "F", "optim", "padding_mask"} | set(
+        dir(builtins)
+    )
 
-    This is a compatibility bridge: the current DSL is sequential, so every
-    op consumes the previous op output.
-    """
-
-    param_name = input_value_name or forward_block.parameter
-    current = IRValue(name=param_name)
-
-    graph = IRGraph(inputs=[current])
-
-    for idx, op in enumerate(forward_block.operations):
-        out = IRValue(name=f"t{idx}")
-        node = IRNode(
-            op_name=op.operation,
-            inputs=[current],
-            args=list(op.args),
-            kwargs=dict(op.kwargs),
-            activation=op.activation,
-            output=out,
+    def append(operation, input_names, target):
+        undefined = [name for name in input_names if name not in env]
+        if undefined:
+            raise LocatedError(
+                f"Undefined tensor(s): {', '.join(undefined)}", SourceSpan.from_node(operation)
+            )
+        inputs = [env[name] for name in input_names]
+        shape = None
+        if input_shape is not None:
+            try:
+                shape = infer_graph_output_shape(operation, [value.shape for value in inputs])
+            except ValueError as error:
+                raise LocatedError(str(error), SourceSpan.from_node(operation)) from error
+        try:
+            dtype = infer_dtype(operation, [value.type_hint for value in inputs], parameter_dtype)
+        except ValueError as error:
+            raise LocatedError(str(error), SourceSpan.from_node(operation)) from error
+        name = target
+        version = 1
+        while name in used_names:
+            name = f"{target}__{version}"
+            version += 1
+        used_names.add(name)
+        output = IRValue(name, type_hint=dtype, shape=shape)
+        graph.nodes.append(
+            IRNode(
+                operation.operation,
+                inputs,
+                list(operation.args),
+                dict(operation.kwargs),
+                operation.activation,
+                output,
+                operation.line,
+                operation.column,
+                operation.end_line,
+                operation.end_column,
+            )
         )
-        graph.nodes.append(node)
-        current = out
+        env[target] = output
+        return output
 
-    graph.outputs = [current]
+    if isinstance(forward_block, ForwardGraphBlock):
+        for node in forward_block.nodes:
+            if node.operation is None:
+                raise ValueError(f"Missing graph operation at line {node.line}")
+            append(node.operation, node.inputs, node.target)
+        output_name = forward_block.output_var or (
+            forward_block.nodes[-1].target if forward_block.nodes else forward_block.parameter
+        )
+        if output_name not in env:
+            line = getattr(output_name, "line", forward_block.line)
+            column = getattr(output_name, "column", forward_block.column)
+            raise LocatedError(
+                f"Undefined return tensor '{output_name}'",
+                SourceSpan(line, column, line, column + len(output_name)),
+            )
+        graph.outputs = [env[output_name]]
+    else:
+        current_name = forward_block.parameter
+        output = input_value
+        for index, operation in enumerate(forward_block.operations):
+            target = f"t{index}"
+            # Sequential temporaries must never overwrite the parameter binding.
+            while target in env:
+                target += "_"
+            output = append(operation, [current_name], target)
+            current_name = target
+        graph.outputs = [output]
     return graph
 
 
-def lower_forward_block(forward_block) -> IRGraph:
-    """Lower either sequential or graph-based forward blocks into IR."""
-    if isinstance(forward_block, ForwardGraphBlock):
-        input_value = IRValue(name=forward_block.parameter)
-        env: Dict[str, IRValue] = {forward_block.parameter: input_value}
-        graph = IRGraph(inputs=[input_value])
+def lower_model(model) -> IRGraph:
+    """Use one model input/dtype contract across all compiler consumers."""
+    input_dtype, parameter_dtype = model_dtypes(model)
+    return lower_forward_block(
+        model.forward_block,
+        tuple(model.config.get("input_shape", (1, 28, 28))),
+        input_dtype=input_dtype,
+        parameter_dtype=parameter_dtype,
+    )
 
-        for node in forward_block.nodes:
-            if node.operation is None:
-                continue
-            out = IRValue(name=node.target)
-            inputs = [env[v] for v in node.inputs]
-            ir_node = IRNode(
-                op_name=node.operation.operation,
-                inputs=inputs,
-                args=list(node.operation.args),
-                kwargs=dict(node.operation.kwargs),
-                activation=node.operation.activation,
-                output=out,
-            )
-            graph.nodes.append(ir_node)
-            env[node.target] = out
 
-        output_var = forward_block.output_var or (
-            forward_block.nodes[-1].target if forward_block.nodes else forward_block.parameter
+def lower_sequential_forward(forward_block, input_value_name: Optional[str] = None) -> IRGraph:
+    """Compatibility entry point for callers lowering a sequential block."""
+    if input_value_name is not None:
+        forward_block = ForwardBlock(
+            parameter=input_value_name,
+            operations=forward_block.operations,
+            line=forward_block.line,
+            column=forward_block.column,
         )
-        graph.outputs = [env[output_var]]
-        return graph
-
-    if isinstance(forward_block, ForwardBlock):
-        return lower_sequential_forward(forward_block)
-
-    raise TypeError(f"Unsupported forward block type for IR lowering: {type(forward_block)}")
+    return lower_forward_block(forward_block)

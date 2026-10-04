@@ -6,19 +6,22 @@ import sys
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE, get_progress
 from ..utils import validate_file, get_file_stats
-from ...compiler import compile_source, CompilationError
+from ...compiler import compile_source, CompilationError, write_compiled_output
 from ...parser import parse_aurane, ParseError
 
 try:
+    from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
+
+    console = Console(stderr=True)
 except ImportError:
     pass
 
 
 def cmd_compile(args):
     """Enhanced compile command with rich output."""
-    if not RICH_AVAILABLE or console is None:
+    if (not args.output and not args.output_override) or not RICH_AVAILABLE or console is None:
         return cmd_compile_basic(args)
 
     try:
@@ -81,8 +84,7 @@ def cmd_compile(args):
             _print_diff(output_path.read_text(encoding="utf-8"), python_code, output_path)
 
         if output_path is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(python_code, encoding="utf-8")
+            write_compiled_output(input_file, output_path, python_code)
 
             if not args.quiet:
                 output_stats = get_file_stats(output_path)
@@ -123,6 +125,8 @@ def cmd_compile_basic(args):
             output_path = Path(args.output)
 
         source = input_file.read_text(encoding="utf-8")
+        if args.show_ast and not args.quiet:
+            print(parse_aurane(source), file=sys.stderr)
         python_code = compile_source(
             source,
             backend=args.backend,
@@ -135,11 +139,11 @@ def cmd_compile_basic(args):
             python_code = _maybe_black_format(python_code, args)
 
         if output_path is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
             if args.diff and output_path.exists():
                 _print_diff(output_path.read_text(encoding="utf-8"), python_code, output_path)
-            output_path.write_text(python_code, encoding="utf-8")
-            print(f"OK: {args.input} -> {output_path}")
+            write_compiled_output(input_file, output_path, python_code)
+            if not args.quiet:
+                print(f"OK: {args.input} -> {output_path}", file=sys.stderr)
         else:
             sys.stdout.write(python_code)
         return 0
@@ -154,7 +158,10 @@ def _maybe_black_format(python_code: str, args) -> str:
         import black
 
         mode = black.FileMode()
-        return black.format_file_contents(python_code, fast=False, mode=mode)
+        try:
+            return black.format_file_contents(python_code, fast=False, mode=mode)
+        except black.NothingChanged:
+            return python_code
     except ImportError as e:
         raise CompilationError(
             "Requested --format but 'black' is not installed. Install dev dependencies: pip install aurane[dev]"

@@ -11,6 +11,15 @@ Performs semantic analysis beyond parsing, including:
 from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from .diagnostics import SourceSpan
+from .symbols import resolve_program, ResolutionError
+from .configuration import (
+    OPTIMIZER_CLASSES,
+    LOSS_CLASSES,
+    validate_program_configuration,
+    validate_training_options,
+    training_references,
+)
 
 from .ast import (
     AuraneProgram,
@@ -42,6 +51,7 @@ class SemanticIssue:
     location: str
     code: str  # Issue code like "E001", "W001"
     fix: Optional[str] = None
+    span: Optional[SourceSpan] = None
 
 
 @dataclass
@@ -69,160 +79,11 @@ class SemanticAnalysisResult:
         return not self.has_errors
 
 
-# Known layer operations and their expected arguments
-LAYER_SPECS: Dict[str, Dict[str, Any]] = {
-    "conv2d": {
-        "args": ["out_channels"],
-        "kwargs": {"kernel": int, "stride": int, "padding": int, "bias": bool},
-        "activations": ["relu", "gelu", "leaky_relu", "sigmoid", "tanh"],
-    },
-    "conv1d": {
-        "args": ["out_channels"],
-        "kwargs": {"kernel": int, "stride": int, "padding": int},
-        "activations": ["relu", "gelu", "leaky_relu"],
-    },
-    "dense": {
-        "args": ["out_features"],
-        "kwargs": {"bias": bool},
-        "activations": ["relu", "gelu", "sigmoid", "tanh", "softmax"],
-    },
-    "linear": {
-        "args": ["out_features"],
-        "kwargs": {"bias": bool},
-        "activations": ["relu", "gelu", "sigmoid", "tanh", "softmax"],
-    },
-    "maxpool": {
-        "args": ["kernel_size"],
-        "kwargs": {"stride": int},
-        "activations": [],
-    },
-    "avgpool": {
-        "args": ["kernel_size"],
-        "kwargs": {"stride": int},
-        "activations": [],
-    },
-    "dropout": {
-        "args": ["rate"],
-        "kwargs": {},
-        "activations": [],
-    },
-    "batchnorm": {
-        "args": [],
-        "kwargs": {"momentum": float, "eps": float},
-        "activations": ["relu", "gelu"],
-    },
-    "batch_norm": {
-        "args": [],
-        "kwargs": {"momentum": float, "eps": float},
-        "activations": ["relu", "gelu"],
-    },
-    "layer_norm": {
-        "args": [],
-        "kwargs": {"eps": float},
-        "activations": [],
-    },
-    "flatten": {
-        "args": [],
-        "kwargs": {},
-        "activations": [],
-    },
-    "reshape": {
-        "args": ["shape"],
-        "kwargs": {},
-        "activations": [],
-    },
-    "leaky_relu": {
-        "args": ["negative_slope"],
-        "kwargs": {},
-        "activations": [],
-    },
-    "embedding": {
-        "args": ["num_embeddings", "embedding_dim"],
-        "kwargs": {"padding_idx": int},
-        "activations": [],
-    },
-    "multihead_attention": {
-        "args": [],
-        "kwargs": {"heads": int, "dim": int, "dropout": float},
-        "activations": [],
-    },
-    "positional_encoding": {
-        "args": [],
-        "kwargs": {"max_len": int},
-        "activations": [],
-    },
-    "lstm": {
-        "args": ["hidden_size"],
-        "kwargs": {"num_layers": int, "bidirectional": bool, "dropout": float},
-        "activations": [],
-    },
-    "gru": {
-        "args": ["hidden_size"],
-        "kwargs": {"num_layers": int, "bidirectional": bool, "dropout": float},
-        "activations": [],
-    },
-    "global_avg_pool": {
-        "args": [],
-        "kwargs": {},
-        "activations": [],
-    },
-    "upsample": {
-        "args": [],
-        "kwargs": {"scale_factor": int, "mode": str},
-        "activations": [],
-    },
-    "concat": {
-        "args": [],
-        "kwargs": {"dim": int},
-        "activations": [],
-    },
-    "add": {
-        "args": [],
-        "kwargs": {},
-        "activations": ["relu"],
-    },
-}
+from .operations import validate_operation, ACTIVATION_NAMES, OPERATION_SPECS as LAYER_SPECS
 
-# Known activation functions
-ACTIVATIONS = {
-    "relu",
-    "gelu",
-    "leaky_relu",
-    "sigmoid",
-    "tanh",
-    "softmax",
-    "silu",
-    "mish",
-    "elu",
-    "selu",
-    "swish",
-    "hardswish",
-    "residual",  # Special case for residual connections
-}
-
-# Known optimizers
-OPTIMIZERS = {
-    "adam",
-    "sgd",
-    "adamw",
-    "rmsprop",
-    "adagrad",
-    "adadelta",
-}
-
-# Known loss functions
-LOSS_FUNCTIONS = {
-    "cross_entropy",
-    "mse",
-    "mae",
-    "bce",
-    "nll",
-    "huber",
-    "cross_entropy_loss",
-    "mse_loss",
-    "l1_loss",
-    "bce_loss",
-}
+ACTIVATIONS = ACTIVATION_NAMES | {"residual"}
+OPTIMIZERS = set(OPTIMIZER_CLASSES)
+LOSS_FUNCTIONS = set(LOSS_CLASSES)
 
 
 class SemanticAnalyzer:
@@ -245,6 +106,20 @@ class SemanticAnalyzer:
 
     def analyze(self) -> SemanticAnalysisResult:
         """Run all semantic analysis passes."""
+        try:
+            self.program = resolve_program(self.program)
+        except ResolutionError as error:
+            self._add_issue(
+                IssueKind.ERROR, str(error), "constants", "E009", span=getattr(error, "span", None)
+            )
+            return self.result
+        try:
+            validate_program_configuration(self.program)
+        except ValueError as error:
+            self._add_issue(
+                IssueKind.ERROR, str(error), "program", "E010", span=getattr(error, "span", None)
+            )
+            return self.result
         self._collect_definitions()
         self._analyze_imports()
         self._analyze_experiments()
@@ -399,52 +274,16 @@ class SemanticAnalyzer:
         op_name = op.operation.lower()
         location = f"model {model_name}, layer {idx}"
 
-        # Check if operation is known
-        if op_name not in LAYER_SPECS:
+        try:
+            validate_operation(op)
+        except ValueError as error:
             self._add_issue(
-                IssueKind.WARNING, f"Unknown operation: {op.operation}", location, "W007"
+                IssueKind.ERROR,
+                str(error),
+                f"{location}, line {op.line}",
+                "E005",
+                span=SourceSpan.from_node(op),
             )
-            return
-
-        spec = LAYER_SPECS[op_name]
-
-        # Check activation
-        if op.activation:
-            activation = op.activation.lower()
-            if activation not in ACTIVATIONS:
-                self._add_issue(
-                    IssueKind.WARNING, f"Unknown activation: {op.activation}", location, "W008"
-                )
-            elif (
-                spec["activations"]
-                and activation not in spec["activations"]
-                and activation != "residual"
-            ):
-                self._add_issue(
-                    IssueKind.INFO,
-                    f"Unusual activation {op.activation} for {op_name}",
-                    location,
-                    "I001",
-                )
-
-        # Check dropout rate
-        if op_name == "dropout" and op.args:
-            rate = op.args[0]
-            if isinstance(rate, (int, float)):
-                if rate <= 0 or rate >= 1:
-                    self._add_issue(
-                        IssueKind.ERROR,
-                        f"Dropout rate must be between 0 and 1, got {rate}",
-                        location,
-                        "E005",
-                    )
-                elif rate > 0.5:
-                    self._add_issue(
-                        IssueKind.SUGGESTION,
-                        f"High dropout rate ({rate}) may hurt training",
-                        location,
-                        "S003",
-                    )
 
     def _check_model_patterns(self, model: ModelNode):
         """Check for common model patterns and best practices."""
@@ -491,53 +330,42 @@ class SemanticAnalyzer:
 
     def _analyze_training(self):
         """Analyze training configurations."""
-        for train in self.program.trains:
-            location = f"train {train.model_name}"
-
-            # Check references
-            if train.model_name not in self.defined_models:
+        definitions = {"model": self.defined_models, "dataset": self.defined_datasets}
+        for train in [*self.program.trains, *self.program.train_gans]:
+            location = f"train at line {train.line}"
+            try:
+                validate_training_options(train)
+            except ValueError as error:
                 self._add_issue(
-                    IssueKind.ERROR, f"Undefined model: {train.model_name}", location, "E006"
+                    IssueKind.ERROR, str(error), location, "E010", span=getattr(error, "span", None)
                 )
-
-            if train.dataset_name not in self.defined_datasets:
-                self._add_issue(
-                    IssueKind.ERROR, f"Undefined dataset: {train.dataset_name}", location, "E007"
-                )
-
-            # Check optimizer
-            optimizer = train.config.get("optimizer")
-            if optimizer:
-                opt_name = (
-                    optimizer.split("(")[0].lower() if "(" in optimizer else optimizer.lower()
-                )
-                if opt_name not in OPTIMIZERS:
+                continue
+            for kind, name in training_references(train):
+                if name not in definitions[kind]:
                     self._add_issue(
-                        IssueKind.WARNING, f"Unknown optimizer: {optimizer}", location, "W010"
-                    )
-
-            # Check loss function
-            loss = train.config.get("loss")
-            if loss:
-                loss_name = loss.lower().replace("_", "")
-                known = any(l.replace("_", "") in loss_name for l in LOSS_FUNCTIONS)
-                if not known:
-                    self._add_issue(
-                        IssueKind.WARNING, f"Unknown loss function: {loss}", location, "W011"
-                    )
-
-            # Check epochs
-            epochs = train.config.get("epochs")
-            if epochs and isinstance(epochs, int):
-                if epochs < 1:
-                    self._add_issue(IssueKind.ERROR, "Epochs must be at least 1", location, "E008")
-                elif epochs > 1000:
-                    self._add_issue(
-                        IssueKind.SUGGESTION,
-                        f"Many epochs ({epochs}), consider early stopping",
+                        IssueKind.ERROR,
+                        f"Undefined {kind}: {name}",
                         location,
-                        "S006",
+                        "E006" if kind == "model" else "E007",
+                        span=next(
+                            (
+                                train.config_spans[key]
+                                for key in ("validate_on", "test_on")
+                                if train.config.get(key) == name and key in train.config_spans
+                            ),
+                            SourceSpan.from_node(train),
+                        ),
                     )
+        for train in self.program.trains:
+            epochs = train.config.get("epochs")
+            if type(epochs) is int and epochs > 1000:
+                self._add_issue(
+                    IssueKind.SUGGESTION,
+                    f"Many epochs ({epochs}), consider early stopping",
+                    f"train {train.model_name}",
+                    "S006",
+                    span=train.config_spans.get("epochs"),
+                )
 
     def _compute_dependencies(self):
         """Compute dependency graph."""
@@ -569,11 +397,19 @@ class SemanticAnalyzer:
             self._add_issue(IssueKind.WARNING, "Program appears to be empty", "program", "W012")
 
     def _add_issue(
-        self, kind: IssueKind, message: str, location: str, code: str, fix: Optional[str] = None
+        self,
+        kind: IssueKind,
+        message: str,
+        location: str,
+        code: str,
+        fix: Optional[str] = None,
+        span: Optional[SourceSpan] = None,
     ):
         """Add an issue to results."""
         self.result.issues.append(
-            SemanticIssue(kind=kind, message=message, location=location, code=code, fix=fix)
+            SemanticIssue(
+                kind=kind, message=message, location=location, code=code, fix=fix, span=span
+            )
         )
 
 

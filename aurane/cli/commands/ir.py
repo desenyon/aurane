@@ -10,8 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
-from ...parser import parse_aurane
-from ...ir import lower_forward_block
+from ...symbols import parse_resolved
+from ...ir import lower_model
 
 
 def _print_or_console(use_rich: bool, text: str) -> None:
@@ -28,15 +28,14 @@ def cmd_ir(args) -> int:
     try:
         input_file = validate_file(args.input, [".aur"])
         source = input_file.read_text(encoding="utf-8")
-        program = parse_aurane(source)
+        program = parse_resolved(source)
 
         models = program.models
         if args.model:
             models = [m for m in models if m.name == args.model]
 
         if not models:
-            _print_or_console(use_rich, "No models found.")
-            return 1
+            raise ValueError("No models found.")
 
         payload: Dict[str, Any] = {"file": str(input_file), "models": []}
         for model in models:
@@ -44,7 +43,7 @@ def cmd_ir(args) -> int:
                 payload["models"].append({"name": model.name, "ir": None})
                 continue
 
-            ir_graph = lower_forward_block(model.forward_block)
+            ir_graph = lower_model(model)
             if args.format == "json":
                 payload["models"].append({"name": model.name, "ir": asdict(ir_graph)})
             else:
@@ -61,7 +60,7 @@ def cmd_ir(args) -> int:
                 payload["models"].append({"name": model.name, "ir": nodes})
 
         if args.format == "json":
-            _print_or_console(use_rich, json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2))
         else:
             for m in payload["models"]:
                 _print_or_console(use_rich, f"\nIR for model: {m['name']}")
@@ -70,7 +69,18 @@ def cmd_ir(args) -> int:
         return 0
 
     except Exception as e:
-        if use_rich and console is not None:
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "file": str(args.input),
+                        "ok": False,
+                        "models": [],
+                        "error": {"kind": type(e).__name__, "message": str(e)},
+                    }
+                )
+            )
+        elif use_rich and console is not None:
             console.print(f"[red][FAIL] Error:[/red] {e}")
         else:
             print(f"Error: {e}")

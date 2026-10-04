@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       publish_to:
@@ -18,8 +16,12 @@ on:
           - pypi
 
 jobs:
+  quality:
+    uses: ./.github/workflows/tests.yml
+
   build:
-    name: Build distribution
+    name: Build and verify distribution
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,8 +36,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PYCODE'
+          import os, tomllib
+          with open("pyproject.toml", "rb") as stream:
+              version = tomllib.load(stream)["project"]["version"]
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Release tag does not match package version"
+          PYCODE
+
       - name: Build package
         run: python -m build
+
+      - name: Verify the exact artifacts that will be published
+        run: |
+          python -m venv /tmp/aurane-release-check
+          /tmp/aurane-release-check/bin/python -m pip install dist/*.whl
+          /tmp/aurane-release-check/bin/python -I scripts/verify_distribution.py dist
 
       - name: Store distribution packages
         uses: actions/upload-artifact@v4
@@ -68,7 +88,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    if: github.event_name == 'release' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to == 'pypi')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to == 'pypi')
     needs: build
     runs-on: ubuntu-latest
     environment:

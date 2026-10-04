@@ -25,34 +25,49 @@ def cmd_clean(args):
         removed_files = 0
         removed_dirs = 0
 
-        # Define what to clean
-        extensions_to_clean = [
-            ".pyc",
-            ".pyo",
-            ".pyd",
-            ".so",
-            ".aur.py",
-        ]  # Maybe generated .py files but that's risky. Let's stick to pycache and specific temp patterns.
-        dirs_to_clean = ["__pycache__", ".pytest_cache", ".aurane_cache"]
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError("Clean requires a real directory, not a file or symlink")
+        if (path / "pyvenv.cfg").exists() or path.name in (
+            ".git",
+            ".venv",
+            "venv",
+            "env",
+            "node_modules",
+        ):
+            raise ValueError("Refusing to clean a dependency or repository metadata directory")
 
-        for p in path.rglob("*"):
-            if p.is_file():
-                if p.suffix in extensions_to_clean or p.name.endswith("_temp.py"):
+        cache_dirs = {"__pycache__", ".pytest_cache", ".aurane_cache"}
+        excluded_dirs = {".git", ".venv", "venv", "env", "node_modules"}
+        for root, dirs, files in os.walk(path, followlinks=False):
+            parent = Path(root)
+            for name in list(dirs):
+                directory = parent / name
+                if (
+                    directory.is_symlink()
+                    or name in excluded_dirs
+                    or (directory / "pyvenv.cfg").exists()
+                ):
+                    dirs.remove(name)
+                elif name in cache_dirs:
+                    dirs.remove(name)
                     if args.dry_run:
-                        console.print(f"[dim]Would remove file:[/dim] {p}")
+                        console.print(f"[dim]Would remove directory:[/dim] {directory}")
                     else:
-                        p.unlink()
+                        shutil.rmtree(directory)
                         if args.verbose:
-                            console.print(f"[dim]Removed file:[/dim] {p}")
-                    removed_files += 1
-            elif p.is_dir() and p.name in dirs_to_clean:
+                            console.print(f"[dim]Removed directory:[/dim] {directory}")
+                    removed_dirs += 1
+            for name in files:
+                artifact = parent / name
+                if artifact.is_symlink() or artifact.suffix not in (".pyc", ".pyo"):
+                    continue
                 if args.dry_run:
-                    console.print(f"[dim]Would remove directory:[/dim] {p}")
+                    console.print(f"[dim]Would remove file:[/dim] {artifact}")
                 else:
-                    shutil.rmtree(p)
+                    artifact.unlink()
                     if args.verbose:
-                        console.print(f"[dim]Removed directory:[/dim] {p}")
-                removed_dirs += 1
+                        console.print(f"[dim]Removed file:[/dim] {artifact}")
+                removed_files += 1
 
         if args.dry_run:
             console.print(
