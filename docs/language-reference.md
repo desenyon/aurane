@@ -1,6 +1,6 @@
 # Language reference
 
-This reference describes the current working tree. Aurane is an indentation-based
+This reference describes Aurane 3.0.0. Aurane is an indentation-based
 language; blank lines and comments do not change block nesting. Unknown statements
 are errors. Values support numbers, booleans, `None`, escaped strings, nested
 lists/tuples, named constants, and named configuration calls. Arbitrary Python
@@ -27,6 +27,9 @@ import, so the imported package must exist when the generated module is imported
 
 `input_shape` excludes the batch axis. The legacy default is `(1, 28, 28)`;
 specify it explicitly for predictable analysis.
+Use `-1` for an unknown dimension. Flatten and inferred reshape dimensions remain
+unknown when the input element count is unknown; dense layers require a known
+positive final feature dimension.
 
 Sequential syntax:
 

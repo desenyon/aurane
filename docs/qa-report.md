@@ -80,8 +80,11 @@ CI now declares compiler tests for Python 3.10–3.13, required runtime tests,
 minimum/current PyTorch jobs running the full suite, required formatting/type
 checks and a built-distribution check. Publishing depends on that reusable quality
 workflow and verifies its exact artifacts before upload. YAML parsing and the
-release dependency chain were checked locally. Hosted jobs have
-not been executed in this session.
+release dependency chain were checked locally. All eight hosted jobs passed for
+commit `51a55e3`: compiler tests on Python 3.10–3.13, minimum/current CPU PyTorch,
+formatting/type checks, and built-distribution verification.
+See the [GitHub Actions run](https://github.com/desenyon/aurane/actions/runs/37166278688).
+The tagged publication workflow is a separate release step.
 
 ## Limits
 

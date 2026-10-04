@@ -8,8 +8,8 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
 - **[Getting Started Guide](getting-started.md)** - Quick start tutorial and first steps
   - Installation instructions
   - Your first model
-  - Interactive development
-  - Common patterns
+  - Offline training and evaluation
+  - Checkpoint restoration
 
 ### Reference Materials
 - **[Language Reference](language-reference.md)** - Complete syntax and semantics
@@ -17,7 +17,7 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
   - All supported layers
   - Activation functions
   - Training configuration
-  - Complete examples
+  - Compiler behavior and migration
 
 - **[CLI Commands](cli-commands.md)** - Command-line interface reference
   - All commands explained
@@ -26,7 +26,7 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
   - Tips and tricks
 
 ### Tutorials
-- **[Examples Guide](examples.md)** - Walkthrough of example models
+- **[Examples Guide](examples.md)** - Example purposes, execution and QA scope
   - Simple network
   - MNIST CNN
   - ResNet architecture
@@ -48,27 +48,27 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
 ## 📖 Topics by Task
 
 ### Writing Models
-- [Language Reference - Models](language-reference.md#models)
-- [Language Reference - Layers](language-reference.md#layers)
-- [Examples - MNIST CNN](examples.md#mnist-cnn)
+- [Language Reference - Models](language-reference.md#models-and-tensor-graphs)
+- [Language Reference - Layers](language-reference.md#implemented-operations)
+- [Examples - MNIST CNN](../examples/mnist.aur)
 
 ### Training Configuration
-- [Language Reference - Training](language-reference.md#training)
-- [Examples - Complete Pipeline](examples.md#mnist-cnn)
+- [Language Reference - Training](language-reference.md#standard-training)
+- [Examples - Complete Pipeline](../examples/mnist.aur)
 
 ### CLI Usage
-- [CLI Commands - Compile](cli-commands.md#compile)
-- [CLI Commands - Inspect](cli-commands.md#inspect)
-- [CLI Commands - Watch](cli-commands.md#watch)
+- [CLI Commands - Compile](cli-commands.md#compile-and-check)
+- [CLI Commands - Inspect](cli-commands.md#inspect-ir-profile-and-visualize)
+- [CLI Commands - Watch](cli-commands.md#run-and-watch)
 
 ### Code Quality
-- [CLI Commands - Format](cli-commands.md#format)
-- [CLI Commands - Lint](cli-commands.md#lint)
-- [Getting Started - Best Practices](getting-started.md#tips-and-best-practices)
+- [CLI Commands - Format](cli-commands.md#format-and-lint)
+- [CLI Commands - Lint](cli-commands.md#format-and-lint)
+- [QA evidence and limits](qa-report.md)
 
 ### Performance
 - [CLI Commands - Benchmark](cli-commands.md#benchmark)
-- [Getting Started - Watch Mode](getting-started.md#watch-mode-for-live-development)
+- [CLI Commands - Watch Mode](cli-commands.md#run-and-watch)
 
 ## 🎯 Common Tasks
 
@@ -76,69 +76,69 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
 ```bash
 aurane compile model.aur output.py
 ```
-See: [CLI Commands - Compile](cli-commands.md#compile)
+See: [CLI Commands - Compile](cli-commands.md#compile-and-check)
 
 ### Inspect Architecture
 ```bash
 aurane inspect model.aur --verbose
 ```
-See: [CLI Commands - Inspect](cli-commands.md#inspect)
+See: [CLI Commands - Inspect](cli-commands.md#inspect-ir-profile-and-visualize)
 
 ### Live Development
 ```bash
 aurane watch model.aur output.py
 ```
-See: [CLI Commands - Watch](cli-commands.md#watch)
+See: [CLI Commands - Watch](cli-commands.md#run-and-watch)
 
 ### Interactive Coding
 ```bash
 aurane interactive
 ```
-See: [Getting Started - Interactive Development](getting-started.md#interactive-development)
+See: [CLI Commands - Interactive Development](cli-commands.md#scaffold-interactive-mode-and-cleanup)
 
 ## 🔍 Finding Information
 
 ### By Language Feature
 
 **Layers:**
-- Convolution: [Language Reference - Layers](language-reference.md#convolution-layers)
-- Pooling: [Language Reference - Layers](language-reference.md#pooling-layers)
-- Linear: [Language Reference - Layers](language-reference.md#linear-layers)
-- Normalization: [Language Reference - Layers](language-reference.md#normalization-layers)
+- Convolution: [Language Reference - Layers](language-reference.md#implemented-operations)
+- Pooling: [Language Reference - Layers](language-reference.md#implemented-operations)
+- Linear: [Language Reference - Layers](language-reference.md#implemented-operations)
+- Normalization: [Language Reference - Layers](language-reference.md#implemented-operations)
 
 **Configuration:**
-- Experiments: [Language Reference - Experiments](language-reference.md#experiments)
+- Experiments: [Language Reference - Experiments](language-reference.md#experiment-configuration)
 - Datasets: [Language Reference - Datasets](language-reference.md#datasets)
-- Training: [Language Reference - Training](language-reference.md#training)
+- Training: [Language Reference - Training](language-reference.md#standard-training)
 
 ### By Architecture Type
 
 **Vision Models:**
-- [Examples - MNIST CNN](examples.md#mnist-cnn)
-- [Examples - ResNet](examples.md#resnet-architecture)
+- [Examples - MNIST CNN](../examples/mnist.aur)
+- [Examples - ResNet](../examples/resnet.aur)
 
 **NLP Models:**
-- [Examples - Transformer](examples.md#transformer-model)
+- [Examples - Transformer](../examples/transformer.aur)
 
 **Generative Models:**
-- [Examples - GAN](examples.md#generative-adversarial-network)
+- [Examples - GAN](../examples/gan.aur)
 
 ## 💡 Learning Path
 
 ### Beginner (Days 1-3)
 1. Read [Getting Started](getting-started.md)
-2. Try [Simple Network Example](examples.md#simple-network)
-3. Experiment with [Interactive Mode](getting-started.md#interactive-development)
+2. Try [Simple Network Example](../examples/simple.aur)
+3. Experiment with [Interactive Mode](cli-commands.md#scaffold-interactive-mode-and-cleanup)
 4. Build your first MNIST model
 
 ### Intermediate (Week 2)
-1. Study [Language Reference - Models](language-reference.md#models)
+1. Study [Language Reference - Models](language-reference.md#models-and-tensor-graphs)
 2. Build a custom CNN
 3. Master [CLI Commands](cli-commands.md)
-4. Try [ResNet Example](examples.md#resnet-architecture)
+4. Try [ResNet Example](../examples/resnet.aur)
 
 ### Advanced (Month 1+)
-1. Implement [Transformer](examples.md#transformer-model)
+1. Implement [Transformer](../examples/transformer.aur)
 2. Create custom architectures
 3. Use all CLI tools (format, lint, benchmark)
 4. Contribute examples back to community
@@ -152,12 +152,12 @@ See: [Getting Started - Interactive Development](getting-started.md#interactive-
 
 ### Analysis Tools
 - `inspect` - View model architecture
-- `benchmark` - Measure performance
+- `benchmark` - Measure compiler parse, cold compile and cache-read timing
 - `lint` - Check for issues
 
 ### Quality Tools
 - `format` - Auto-format code
-- `validate` - Check syntax
+- `check` - Check semantic, shape and dtype contracts
 
 See [CLI Commands](cli-commands.md) for complete details.
 
@@ -206,8 +206,8 @@ aurane compile model.aur output.py --validate --format
 
 - [Main README](../README.md) - Project overview
 - [Examples Directory](../examples/) - Sample .aur files
-- [GitHub Repository](https://github.com/yourusername/aurane) - Source code
-- [GitHub Issues](https://github.com/yourusername/aurane/issues) - Bug reports
+- [GitHub Repository](https://github.com/desenyon/aurane) - Source code
+- [GitHub Issues](https://github.com/desenyon/aurane/issues) - Bug reports
 
 ## 🤝 Contributing
 
@@ -218,7 +218,7 @@ Want to improve the documentation?
 3. Create tutorials for specific use cases
 4. Translate documentation
 
-See main [README](../README.md) for contribution guidelines.
+See the main [README development section](../README.md#development) for verification commands.
 
 ## 📝 Documentation Standards
 
@@ -234,18 +234,19 @@ All documentation follows:
 **Documentation unclear?**
 - Check other sections in this directory
 - Look at [Examples](examples.md)
-- Try [Interactive Mode](getting-started.md#interactive-development)
+- Try [Interactive Mode](cli-commands.md#scaffold-interactive-mode-and-cleanup)
 
 **Found a bug?**
-- Report on [GitHub Issues](https://github.com/yourusername/aurane/issues)
+- Report on [GitHub Issues](https://github.com/desenyon/aurane/issues)
 
 **Have a question?**
-- Start a [GitHub Discussion](https://github.com/yourusername/aurane/discussions)
+- Start a [GitHub Discussion](https://github.com/desenyon/aurane/discussions)
 
 ## 📅 Last Updated
 
-Documentation version: 0.2.0  
-Last updated: December 2025
+Documentation version: 3.0.0
+
+Last updated: October 3, 2026
 
 ---
 

@@ -2,7 +2,8 @@
 
 Aurane compiles an indentation-based model language into readable PyTorch.
 The compiler can run without PyTorch; executing generated models requires it.
-These instructions describe the current working tree, including unreleased rework.
+These instructions describe Aurane 3.0.0. See the [changelog](../CHANGELOG.md)
+for migration notes from earlier versions.
 
 ## Install from this checkout
 

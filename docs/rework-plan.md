@@ -1,6 +1,6 @@
 # Aurane rework: audit, delivery plan, and acceptance gates
 
-Status: local implementation and CPU verification complete; release gates open. Baseline: `5941e3e` (2.0.0), inspected 2026-10-02.
+Status: local implementation, CPU verification and hosted quality gates complete; 3.0.0 publication pending. Baseline: `5941e3e` (2.0.0), inspected 2026-10-02.
 
 ## Product and implementation
 
@@ -259,12 +259,14 @@ or performance improvement claim is made without a controlled measurement.
 The supported local implementation is covered by the suites listed in the QA report.
 Release readiness is still subject to these gates:
 
-1. Execute the hosted Python 3.10–3.13 matrix and release workflow, plus CUDA
-   hardware QA. Local minimum/current CPU runtime tests are recorded separately.
-   Publication remains separate from this unreleased working tree.
-2. Review release compatibility and versioning for the accumulated language and
-   generated-code changes before publishing. Backend plugins still consume AST;
-   a typed-IR plugin API would require its own migration contract.
+1. The hosted Python 3.10–3.13 compiler matrix, minimum/current CPU runtime jobs,
+   package verification and lint/type checks passed for `51a55e3` in
+   [GitHub Actions](https://github.com/desenyon/aurane/actions/runs/37166278688).
+   Tagged publication remains a separate step. CUDA hardware QA remains unperformed.
+2. Release compatibility is documented in the [3.0.0 changelog](../CHANGELOG.md).
+   The major version reflects accumulated language and generated-code changes.
+   Backend plugins still consume AST; a typed-IR plugin API would require its own
+   migration contract.
 
 External streams, persistent-worker private state, cross-attention, packed recurrent
 sequences and automatic mixed-dtype promotion are not exposed contracts. Supported

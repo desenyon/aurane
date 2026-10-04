@@ -52,13 +52,13 @@ model TinyNet:
           -> dense(10)
 ```
 
-Compile it:
+Save the model above as `model.aur`, then compile it:
 
 ```bash
-aurane compile examples/simple.aur tiny_net.py --validate --format
+aurane compile model.aur tiny_net.py --validate --format
 ```
 
-Generated shape:
+Equivalent PyTorch structure (generated code also includes dtype setup and distinct graph value names):
 
 ```python
 class TinyNet(nn.Module):
@@ -113,9 +113,10 @@ Requirements:
 | `lint` | Find and fix simple source issues | `aurane lint model.aur --auto-fix` |
 | `format` | Normalize Aurane source style | `aurane format examples/ --check` |
 
-## Current working tree
+## Version 3.0.0
 
-This rework is not yet published. See the [getting-started guide](docs/getting-started.md)
+See the [3.0.0 changelog](CHANGELOG.md) for release and migration details,
+the [getting-started guide](docs/getting-started.md)
 for a tested offline workflow and the [language reference](docs/language-reference.md)
 for supported operations and migration changes.
 
@@ -133,10 +134,10 @@ for supported operations and migration changes.
 
 | Area | Supported |
 | --- | --- |
-| Models | `model`, `input_shape`, sequential forward chains, graph forward blocks |
+| Models | `model`, `input_shape`, `input_dtype`, padding masks, sequential forward chains, graph forward blocks |
 | Layers | `conv1d`, `conv2d`, `lstm`, `gru`, `upsample`, `dense`, `linear`, `flatten`, `maxpool`, `avgpool`, `dropout`, `batch_norm`, `batchnorm`, `reshape`, `embedding`, `multihead_attention`, `layer_norm`, `positional_encoding` |
 | Activations | `relu`, `gelu`, `sigmoid`, `tanh`, `softmax`, `leaky_relu`, `residual` |
-| Analysis | semantic issues, type/shape inference, parameter counts, FLOPs estimates |
+| Analysis | semantic issues, shape/dtype inference, source spans, parameter counts, FLOPs estimates |
 | Output | PyTorch modules, standard/GAN training, metrics, standard/GAN checkpoints and resume, held-out evaluation |
 
 ## Examples
@@ -180,8 +181,8 @@ The [rework plan](docs/rework-plan.md) tracks the current feature audit,
 acceptance criteria, completed repairs, and remaining work.
 
 ```bash
-uv run --extra dev black --check aurane tests
-uv run --extra dev mypy aurane
+uv run --extra dev black --check aurane tests scripts
+uv run --extra dev mypy aurane --ignore-missing-imports
 uv run --extra dev pytest -q
 uv build
 ```
@@ -190,10 +191,11 @@ Run generated-program QA with PyTorch installed:
 
 ```bash
 pip install -e ".[dev]" torch torchvision
-python -m pytest tests/test_runtime.py -q
+python -m pytest tests/ -q
 ```
 
-These offline tests execute forward and backward passes and compare optimized
+These offline suites exercise training, evaluation, checkpoint restoration and
+CLI behavior, execute forward and backward passes, and compare optimized
 and unoptimized outputs, gradients, and state. Optimization levels 1 and 2
 currently apply only verified duplicate-ReLU elimination. They preserve dropout,
 normalization, dense layers, and pooling; training-safe fusion is future work.
@@ -210,10 +212,13 @@ done
 
 ## Documentation
 
+- [Documentation Index](docs/README.md)
+- [Changelog and Migration](CHANGELOG.md)
 - [Getting Started](docs/getting-started.md)
 - [CLI Reference](docs/cli-commands.md)
 - [Language Reference](docs/language-reference.md)
 - [Examples Guide](docs/examples.md)
+- [QA Evidence and Limits](docs/qa-report.md)
 
 ## License
 

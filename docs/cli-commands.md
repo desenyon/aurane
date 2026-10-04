@@ -1,7 +1,7 @@
 # CLI reference
 
 Use `aurane COMMAND --help` for the installed version's exact flags.
-The commands below describe the current working tree.
+The commands below describe Aurane 3.0.0.
 
 ## Compile and check
 
