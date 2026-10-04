@@ -4,36 +4,52 @@ PyTorch code generator for Aurane DSL.
 This module converts Aurane AST nodes into idiomatic PyTorch Python code.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 import re
+import hashlib
+import math
 
 from .ast import (
     AuraneProgram,
+    ConfigCall,
     ExperimentNode,
     DatasetNode,
     ModelNode,
     TrainNode,
     TrainGANNode,
     LayerOperation,
-    ForwardBlock,
-    ForwardGraphBlock,
-    GraphOp,
     LRScheduler,
 )
-from .shapes import infer_output_shape
+from .shapes import infer_output_shape, ACTIVATION_NAMES
+from .symbols import resolve_program
+from .ir import lower_model
+from .dtypes import model_dtypes
+from .configuration import (
+    validate_training_options,
+    validate_program_configuration,
+    GAN_METRICS,
+    configuration_call,
+    loss_configuration,
+    optimizer_configuration,
+    scheduler_configuration,
+    effective_training_config,
+)
+from .metrics import classification_metric_helpers
+from .runtime_templates import ATTENTION_METHOD, DATA_STATE_HELPERS
 
 
 class TorchCodeGenerator:
     """Generates PyTorch code from Aurane AST."""
 
     def __init__(self, program: AuraneProgram):
-        self.program = program
+        self.program = resolve_program(program)
         self.indent_level = 0
         self.layer_counter: Dict[str, int] = {}  # Track layer counts for naming
         self.layer_map: Dict[int, str] = {}  # Map operation index to layer variable name
 
     def generate(self) -> str:
         """Generate complete Python code from the AST."""
+        validate_program_configuration(self.program)
         sections = []
 
         # Imports
@@ -42,6 +58,8 @@ class TorchCodeGenerator:
         # Experiment setup
         if self.program.experiments:
             sections.append(self._generate_experiment_setup(self.program.experiments[0]))
+        elif self.program.trains or self.program.train_gans:
+            sections.append('device = torch.device("cpu")')
 
         # Dataset loaders
         for dataset in self.program.datasets:
@@ -51,19 +69,34 @@ class TorchCodeGenerator:
         for model in self.program.models:
             sections.append(self._generate_model(model))
 
-        # Training functions
-        for train in self.program.trains:
-            sections.append(self._generate_training(train))
-
-        # GAN Training functions
-        for train_gan in self.program.train_gans:
-            sections.append(self._generate_gan_training(train_gan))
-
-        # Main execution
-        if self.program.trains:
-            sections.append(self._generate_main(self.program.trains[0]))
-        elif self.program.train_gans:
-            sections.append(self._generate_gan_training_main(self.program.train_gans[0]))
+        # Preserve source order across standard and adversarial training blocks.
+        jobs: List[Union[TrainNode, TrainGANNode]] = [
+            *self.program.trains,
+            *self.program.train_gans,
+        ]
+        jobs.sort(key=lambda job: job.line)
+        used_names = {model.name for model in self.program.models}
+        used_names.update(f"_make_{dataset.name}_loader" for dataset in self.program.datasets)
+        used_names.update(use.alias or use.module.split(".")[0] for use in self.program.uses)
+        main = ['if __name__ == "__main__":']
+        for job in jobs:
+            if isinstance(job, TrainNode):
+                base = f"train_{job.model_name.lower()}"
+            else:
+                base = f"train_gan_{job.generator_name.lower()}_{job.discriminator_name.lower()}"
+            name, suffix = base, 2
+            while name in used_names:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_names.add(name)
+            if isinstance(job, TrainNode):
+                sections.append(self._generate_training(job, name))
+            else:
+                sections.append(self._generate_gan_training(job, name))
+            main.extend([f"    print('Starting {name} on {job.dataset_name}')", f"    {name}()"])
+        if jobs:
+            main.append("    print('Training completed!')")
+            sections.append("\n".join(main))
 
         return "\n\n".join(sections)
 
@@ -83,12 +116,6 @@ class TorchCodeGenerator:
                 imports.append(f"import {use.module} as {use.alias}")
             else:
                 imports.append(f"import {use.module}")
-
-        # Always add torchvision if not already present, as it's common in examples
-        # but ideally we should check if it's used. For now, keep it for compatibility.
-        if not any("torchvision" in i for i in imports):
-            imports.append("import torchvision")
-            imports.append("import torchvision.transforms as transforms")
 
         return "\n".join(imports)
 
@@ -119,44 +146,93 @@ class TorchCodeGenerator:
         return "\n".join(lines)
 
     def _generate_dataset(self, dataset: DatasetNode) -> str:
-        """Generate dataset and dataloader code."""
-        lines = [f"# Dataset: {dataset.name}"]
-
-        # Parse source
-        if dataset.source:
-            # Extract class name from source like "torchvision.datasets.MNIST"
-            class_parts = dataset.source.split(".")
-            class_name = class_parts[-1]
-
-            # Build dataset instantiation
-            args = []
-
-            # Root directory
-            if "root" in dataset.config:
-                args.append(f"root={self._format_value(dataset.config['root'])}")
-
-            # Train flag
-            if "train" in dataset.config:
-                args.append(f"train={dataset.config['train']}")
-
-            # Transform
-            args.append("transform=transforms.ToTensor()")
-
-            # Download
-            args.append("download=True")
-
-            dataset_var = f"{dataset.name}_dataset"
-            lines.append(f"{dataset_var} = torchvision.datasets.{class_name}({', '.join(args)})")
-
-            # Create DataLoader
-            batch_size = dataset.config.get("batch", 32)
-            is_train = dataset.config.get("train", True)
+        """Create loaders on demand; pass only explicit dataset constructor options."""
+        lines = [f"# Dataset: {dataset.name}", f"def _make_{dataset.name}_loader():"]
+        if not dataset.source:
             lines.append(
-                f"{dataset.name} = DataLoader({dataset_var}, "
-                f"batch_size={batch_size}, shuffle={is_train})"
+                f"    raise ValueError('Dataset {dataset.name} requires a source or an injected loader')"
             )
-
+            return "\n".join(lines)
+        module, _, constructor = dataset.source.rpartition(".")
+        if not module:
+            raise ValueError(f"Dataset source must be a qualified constructor: {dataset.source}")
+        loader_options = {"batch", "shuffle", "num_workers", "pin_memory", "drop_last"}
+        kwargs = {key: value for key, value in dataset.config.items() if key not in loader_options}
+        lines.extend(
+            [
+                "    from importlib import import_module",
+                f"    constructor = getattr(import_module({module!r}), {constructor!r})",
+            ]
+        )
+        if "transforms" in kwargs:
+            if "transform" in kwargs or not isinstance(kwargs["transforms"], list):
+                raise ValueError("Use either a transform call or a transforms list")
+            kwargs["transform"] = ConfigCall("Compose()", [kwargs.pop("transforms")])
+        arguments = []
+        for key, value in kwargs.items():
+            if key in ("transform", "target_transform") and value is not None:
+                expression = self._transform_expression(value)
+                if "    from torchvision import transforms" not in lines:
+                    lines.append("    from torchvision import transforms")
+            else:
+                expression = self._format_value(value)
+            arguments.append(f"{key}={expression}")
+        if module.startswith("torchvision.datasets") and "transform" not in kwargs:
+            lines.append("    from torchvision.transforms import ToTensor")
+            arguments.append("transform=ToTensor()")
+        lines.append(f"    dataset = constructor({', '.join(arguments)})")
+        loader_kwargs = {
+            "batch_size": dataset.config.get("batch", 32),
+            "shuffle": dataset.config.get("shuffle", dataset.config.get("train", True)),
+            "num_workers": dataset.config.get("num_workers", 0),
+            "pin_memory": dataset.config.get("pin_memory", False),
+            "drop_last": dataset.config.get("drop_last", False),
+        }
+        arguments = [f"{key}={value!r}" for key, value in loader_kwargs.items()]
+        lines.append(f"    return DataLoader(dataset, {', '.join(arguments)})")
         return "\n".join(lines)
+
+    def _transform_expression(self, value: Any) -> str:
+        """Construct declared torchvision transforms without evaluating source strings."""
+        supported = {
+            "ToTensor",
+            "PILToTensor",
+            "Normalize",
+            "Resize",
+            "CenterCrop",
+            "RandomCrop",
+            "RandomHorizontalFlip",
+            "RandomVerticalFlip",
+            "RandomResizedCrop",
+            "ColorJitter",
+            "Grayscale",
+            "Pad",
+            "RandomRotation",
+        }
+        if not isinstance(value, ConfigCall):
+            raise ValueError("A transform must be a named transform call")
+        name = value.split("(", 1)[0]
+        if name == "Compose":
+            if len(value.args) == 1 and not value.kwargs:
+                pipeline = value.args[0]
+            elif not value.args and set(value.kwargs) == {"transforms"}:
+                pipeline = value.kwargs["transforms"]
+            else:
+                raise ValueError("Compose transform requires one list of transforms")
+            if not isinstance(pipeline, list):
+                raise ValueError("Compose transform requires a list of transforms")
+            return (
+                "transforms.Compose(["
+                + ", ".join(self._transform_expression(item) for item in pipeline)
+                + "])"
+            )
+        if name not in supported:
+            raise ValueError(f"Unsupported transform: {name}")
+        if any(isinstance(item, ConfigCall) for item in [*value.args, *value.kwargs.values()]):
+            raise ValueError(f"{name} transform arguments must be literals")
+        arguments = [repr(item) for item in value.args]
+        arguments.extend(f"{key}={item!r}" for key, item in value.kwargs.items())
+        return f"transforms.{name}({', '.join(arguments)})"
 
     def _generate_model(self, model: ModelNode) -> str:
         """Generate PyTorch model class."""
@@ -169,52 +245,69 @@ class TorchCodeGenerator:
         init_lines = ["    def __init__(self):"]
         init_lines.append("        super().__init__()")
 
-        # Parse forward block to determine layers
+        graph = None
         if model.forward_block:
-            input_shape = model.config.get("input_shape", (1, 28, 28))
-            if isinstance(model.forward_block, ForwardBlock):
-                layer_defs = self._generate_layer_definitions(model.forward_block, input_shape)
-                init_lines.extend([f"        {line}" for line in layer_defs])
-            elif isinstance(model.forward_block, ForwardGraphBlock):
-                layer_defs = self._generate_layer_definitions_graph(
-                    model.forward_block, input_shape
+            input_shape = tuple(model.config.get("input_shape", (1, 28, 28)))
+            graph = lower_model(model)
+            self.layer_counter = {}
+            self.layer_map = {}
+            for index, node in enumerate(graph.nodes):
+                shape = node.inputs[0].shape
+                assert shape is not None
+                layer, _, _ = self._operation_to_layer_def_with_shape(
+                    node.to_operation(), index, shape[0] if shape else 1, shape
                 )
-                init_lines.extend([f"        {line}" for line in layer_defs])
-
+                if layer:
+                    init_lines.append(f"        {layer}")
+        declared_dtype, parameter_dtype = model_dtypes(model)
+        init_lines.append(f"        self.to(dtype=torch.{parameter_dtype})")
         lines.extend(init_lines)
         lines.append("")
+        if graph is not None:
+            attention = any(node.op_name.lower() == "multihead_attention" for node in graph.nodes)
+            if attention:
+                lines.extend(ATTENTION_METHOD.strip("\n").splitlines())
+            signature = ", padding_mask=None" if attention else ""
+            parameter = graph.inputs[0].name
+            lines.append(f"    def forward(self, {parameter}{signature}):")
+            if declared_dtype is not None:
+                lines.extend(
+                    [
+                        f"        if {parameter}.dtype != torch.{declared_dtype}:",
+                        f"            raise ValueError('{model.name} requires input_dtype {declared_dtype}')",
+                    ]
+                )
 
-        # forward method
-        if model.forward_block:
-            if isinstance(model.forward_block, ForwardBlock):
-                forward_lines = self._generate_forward_method(model.forward_block)
-            else:
-                forward_lines = self._generate_forward_method_graph(model.forward_block)
-            lines.extend([f"    {line}" if line else "" for line in forward_lines])
+            if "input_padding_idx" in model.config:
+                if not attention or len(graph.inputs[0].shape or ()) != 1:
+                    raise ValueError("input_padding_idx requires token input and attention")
+                lines.extend(
+                    [
+                        "        if padding_mask is None:",
+                        f"            padding_mask = {parameter} == {model.config['input_padding_idx']}",
+                    ]
+                )
 
+            for index, node in enumerate(graph.nodes):
+                assert node.output is not None
+                operation = node.to_operation()
+                operation.activation = None
+                inputs = [value.name for value in node.inputs]
+                if node.op_name.lower() == "add":
+                    code = "(" + " + ".join(inputs) + ")"
+                elif node.op_name.lower() == "concat":
+                    code = f"torch.cat([{', '.join(inputs)}], dim={node.kwargs.get('dim', 1)})"
+                else:
+                    code = self._operation_to_forward_code(operation, inputs[0], index)
+                if node.activation:
+                    code = (
+                        f"({code} + {inputs[0]})"
+                        if node.activation == "residual"
+                        else self._apply_activation(code, node.activation)
+                    )
+                lines.append(f"        {node.output.name} = {code}")
+            lines.append(f"        return {graph.outputs[0].name}")
         return "\n".join(lines)
-
-    def _generate_layer_definitions(
-        self, forward_block: ForwardBlock, input_shape: tuple
-    ) -> List[str]:
-        """Generate layer definitions for __init__ method."""
-        layers = []
-        self.layer_counter = {}
-        self.layer_map = {}  # Map operation index to layer variable name
-
-        # Track shape through the network for proper layer instantiation
-        # input_shape is (channels, height, width) for 2D or (features,) for 1D
-        current_channels = input_shape[0] if len(input_shape) >= 1 else 1
-        current_shape = input_shape
-
-        for idx, op in enumerate(forward_block.operations):
-            layer_def, current_channels, current_shape = self._operation_to_layer_def_with_shape(
-                op, idx, current_channels, current_shape
-            )
-            if layer_def:
-                layers.append(layer_def)
-
-        return layers
 
     def _operation_to_layer_def_with_shape(
         self, op: LayerOperation, idx: int, in_channels: int, shape: tuple
@@ -228,16 +321,27 @@ class TorchCodeGenerator:
 
         new_shape = infer_output_shape(op, shape)
 
-        if op_name == "conv2d":
+        if op_name in ("conv1d", "conv2d"):
             out_channels = op.args[0] if op.args else 32
             kernel = op.kwargs.get("kernel", 3)
             stride = op.kwargs.get("stride", 1)
             padding = op.kwargs.get("padding", 0)
 
-            layer_def = f"self.{layer_var} = nn.Conv2d({in_channels}, {out_channels}, {kernel}, stride={stride}, padding={padding})"
+            bias = op.kwargs.get("bias", True)
+            layer_def = f"self.{layer_var} = nn.{'Conv1d' if op_name == 'conv1d' else 'Conv2d'}({in_channels}, {out_channels}, {kernel}, stride={stride}, padding={padding}, dilation={op.kwargs.get('dilation', 1)}, groups={op.kwargs.get('groups', 1)}, bias={bias})"
             return layer_def, out_channels, new_shape
 
-        elif op_name == "maxpool":
+        elif op_name in ("lstm", "gru"):
+            hidden = op.args[0] if op.args else 128
+            options = ", ".join(f"{key}={value!r}" for key, value in op.kwargs.items())
+            kind = "LSTM" if op_name == "lstm" else "GRU"
+            return (
+                f"self.{layer_var} = nn.{kind}({shape[-1]}, {hidden}, batch_first=True, {options})",
+                new_shape[-1],
+                new_shape,
+            )
+
+        elif op_name in ("maxpool", "avgpool"):
             return None, in_channels, new_shape
 
         elif op_name == "flatten":
@@ -247,10 +351,10 @@ class TorchCodeGenerator:
         elif op_name in ("dense", "linear"):
             # dense(out_features)
             out_features = op.args[0] if op.args else 128
-            in_features = shape[0] if shape else 128
+            in_features = shape[-1] if shape else 128
 
-            layer_def = f"self.{layer_var} = nn.Linear({in_features}, {out_features})"
-            new_shape = (out_features,)
+            bias = op.kwargs.get("bias", True)
+            layer_def = f"self.{layer_var} = nn.Linear({in_features}, {out_features}, bias={bias})"
 
             return layer_def, out_features, new_shape
 
@@ -262,29 +366,29 @@ class TorchCodeGenerator:
         elif op_name in ("batch_norm", "batchnorm"):
             num_features = in_channels
             # Simple assumption: if shape is 3D, it's BatchNorm2d, else BatchNorm1d
-            if len(shape) == 3:
-                layer_def = f"self.{layer_var} = nn.BatchNorm2d({num_features})"
-            else:
-                layer_def = f"self.{layer_var} = nn.BatchNorm1d({num_features})"
+            kind = "BatchNorm2d" if len(shape) == 3 else "BatchNorm1d"
+            options = ", ".join(f"{key}={value!r}" for key, value in op.kwargs.items())
+            layer_def = f"self.{layer_var} = nn.{kind}({num_features}, {options})"
             return layer_def, in_channels, shape
 
         elif op_name in ("layer_norm", "layernorm"):
             # LayerNorm needs normalized_shape
-            normalized_shape = shape
-            layer_def = f"self.{layer_var} = nn.LayerNorm({normalized_shape})"
+            normalized_shape = (shape[-1],)
+            options = ", ".join(f"{key}={value!r}" for key, value in op.kwargs.items())
+            layer_def = f"self.{layer_var} = nn.LayerNorm({normalized_shape}, {options})"
             return layer_def, in_channels, shape
 
         elif op_name == "embedding":
             num_embeddings = op.args[0] if op.args else 1000
             embedding_dim = op.args[1] if len(op.args) > 1 else 128
-            layer_def = f"self.{layer_var} = nn.Embedding({num_embeddings}, {embedding_dim})"
-            # Input is (seq_len,), output is (seq_len, embedding_dim)
-            seq_len = shape[0] if shape else 1
-            new_shape = (seq_len, embedding_dim)
+            options = ", ".join(f"{key}={value!r}" for key, value in op.kwargs.items())
+            layer_def = (
+                f"self.{layer_var} = nn.Embedding({num_embeddings}, {embedding_dim}, {options})"
+            )
             return layer_def, embedding_dim, new_shape
 
         elif op_name == "multihead_attention":
-            embed_dim = op.kwargs.get("dim", in_channels)
+            embed_dim = op.kwargs.get("dim", shape[-1])
             num_heads = op.kwargs.get("heads", 8)
             dropout = op.kwargs.get("dropout", 0.0)
             layer_def = f"self.{layer_var} = nn.MultiheadAttention({embed_dim}, {num_heads}, dropout={dropout}, batch_first=True)"
@@ -292,7 +396,7 @@ class TorchCodeGenerator:
 
         elif op_name == "positional_encoding":
             max_len = op.kwargs.get("max_len", 5000)
-            dim = in_channels
+            dim = shape[-1]
             # We'll generate a learned positional encoding for now
             layer_def = f"self.{layer_var} = nn.Parameter(torch.randn(1, {max_len}, {dim}))"
             return layer_def, in_channels, shape
@@ -303,258 +407,63 @@ class TorchCodeGenerator:
         # For other operations, pass through
         return None, in_channels, shape
 
-    def _generate_forward_method(self, forward_block: ForwardBlock) -> List[str]:
-        """Generate the forward method."""
-        lines = [
-            f"def forward(self, {forward_block.parameter}):",
-        ]
-
-        x = forward_block.parameter
-
-        for idx, op in enumerate(forward_block.operations):
-            op_code = self._operation_to_forward_code(op, x, idx)
-            lines.append(f"    {x} = {op_code}")
-
-        lines.append(f"    return {x}")
-
-        return lines
-
-    def _generate_layer_definitions_graph(
-        self, forward_block: ForwardGraphBlock, input_shape: tuple
-    ) -> List[str]:
-        """Generate layer definitions for graph-based forward definitions."""
-        layers: List[str] = []
-        self.layer_counter = {}
-        self.layer_map = {}
-
-        # Track inferred shapes for graph wiring.
-        if isinstance(input_shape, list):
-            current_shape: tuple = tuple(input_shape)
-        else:
-            current_shape = input_shape
-
-        shape_env: Dict[str, tuple] = {forward_block.parameter: current_shape}
-
-        for idx, node in enumerate(forward_block.nodes):
-            op = node.operation
-            if op is None:
-                continue
-            op_name = op.operation.lower()
-            inputs = node.inputs
-
-            # Infer output shape for wiring and parameter initialization.
-            if op_name == "add":
-                out_shape = shape_env.get(inputs[0], current_shape)
-            elif op_name == "concat":
-                dim = int(op.kwargs.get("dim", 1))
-                shapes = [shape_env.get(v, current_shape) for v in inputs]
-                if shapes and all(len(s) == len(shapes[0]) for s in shapes):
-                    out_dims = list(shapes[0])
-                    dim_sum = 0
-                    for s in shapes:
-                        d = s[dim] if len(s) > dim else -1
-                        if d == -1 or dim_sum == -1:
-                            dim_sum = -1
-                            break
-                        dim_sum += d
-                    out_dims[dim] = dim_sum
-                    out_shape = tuple(out_dims)
-                else:
-                    out_shape = shapes[0] if shapes else current_shape
-            else:
-                in_shape = shape_env.get(inputs[0], current_shape)
-                layer_def, _, inferred_shape = self._operation_to_layer_def_with_shape(
-                    op,
-                    idx,
-                    in_channels=in_shape[0] if len(in_shape) >= 1 else 1,
-                    shape=in_shape,
-                )
-                out_shape = inferred_shape
-                if layer_def:
-                    layers.append(layer_def)
-                shape_env[node.target] = out_shape
-                continue
-
-            # For ops without parameters, we still need to update shape env.
-            if op_name not in ("add", "concat"):
-                # handled above
-                pass
-            shape_env[node.target] = out_shape
-
-            # add/concat require no layer instantiation.
-
-        return layers
-
-    def _generate_forward_method_graph(self, forward_block: ForwardGraphBlock) -> List[str]:
-        """Generate a forward method from a graph-based forward definition."""
-        lines: List[str] = [f"def forward(self, {forward_block.parameter}):"]
-
-        shape_env: Dict[str, tuple] = {}
-        # Use parameter tensor directly; intermediate tensors are assigned by name.
-        # We do not generate shape-based logic in forward; it is only used for init lowering.
-        for idx, node in enumerate(forward_block.nodes):
-            op = node.operation
-            if op is None:
-                continue
-            op_name = op.operation.lower()
-            inputs = node.inputs
-
-            if op_name == "add":
-                if len(inputs) < 2:
-                    raise ValueError("add(...) requires at least two inputs")
-                expr = f"({inputs[0]} + {inputs[1]})"
-                if op.activation:
-                    if op.activation.lower() == "residual":
-                        expr = f"({expr} + {inputs[0]})"
-                    else:
-                        expr = self._apply_activation(expr, op.activation)
-                lines.append(f"    {node.target} = {expr}")
-            elif op_name == "concat":
-                dim = int(op.kwargs.get("dim", 1))
-                expr = f"torch.cat([{', '.join(inputs)}], dim={dim})"
-                if op.activation:
-                    if op.activation.lower() == "residual":
-                        expr = f"({expr} + {inputs[0]})"
-                    else:
-                        expr = self._apply_activation(expr, op.activation)
-                lines.append(f"    {node.target} = {expr}")
-            else:
-                if not inputs:
-                    raise ValueError(f"Graph op '{op.operation}' missing input tensor")
-                input_var = inputs[0]
-                op_code = self._operation_to_forward_code(op, input_var, idx)
-                lines.append(f"    {node.target} = {op_code}")
-
-        # Determine output.
-        output_var = forward_block.output_var or (
-            forward_block.nodes[-1].target if forward_block.nodes else forward_block.parameter
-        )
-        lines.append(f"    return {output_var}")
-
-        return lines
-
     def _operation_to_forward_code(self, op: LayerOperation, var: str, idx: int) -> str:
-        """Convert an operation to forward pass code."""
-        op_name = op.operation.lower()
-
-        if op_name == "conv2d":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            code = f"self.{layer_var}({var})"
-            if op.activation:
-                if op.activation.lower() == "residual":
-                    return f"({code} + {var})"
-                code = self._apply_activation(code, op.activation)
-            return code
-
-        elif op_name == "dense" or op_name == "linear":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            code = f"self.{layer_var}({var})"
-            if op.activation:
-                if op.activation.lower() == "residual":
-                    return f"({code} + {var})"
-                code = self._apply_activation(code, op.activation)
-            return code
-
-        elif op_name == "dropout":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            return f"self.{layer_var}({var})"
-
-        elif op_name == "maxpool":
+        """Generate the base operation; the IR caller applies its suffix uniformly."""
+        name = op.operation.lower()
+        module_operations = {
+            "conv1d",
+            "conv2d",
+            "dense",
+            "linear",
+            "dropout",
+            "batchnorm",
+            "batch_norm",
+            "layernorm",
+            "layer_norm",
+            "embedding",
+        }
+        if name in module_operations:
+            return f"self.{self.layer_map[idx]}({var})"
+        if name in ("lstm", "gru"):
+            return f"self.{self.layer_map[idx]}({var})[0]"
+        if name == "upsample":
+            options = ", ".join(f"{key}={value!r}" for key, value in op.kwargs.items())
+            return f"F.interpolate({var}, {options})"
+        if name in ("maxpool", "avgpool"):
             kernel = op.args[0] if op.args else 2
             stride = op.kwargs.get("stride", kernel)
-            return f"F.max_pool2d({var}, {kernel}, stride={stride})"
-
-        elif op_name == "avgpool":
-            kernel = op.args[0] if op.args else 2
-            stride = op.kwargs.get("stride", kernel)
-            return f"F.avg_pool2d({var}, {kernel}, stride={stride})"
-
-        elif op_name == "flatten":
+            function = "max_pool2d" if name == "maxpool" else "avg_pool2d"
+            return f"F.{function}({var}, {kernel}, stride={stride})"
+        if name == "flatten":
             return f"torch.flatten({var}, 1)"
-
-        elif op_name == "reshape":
-            shape_args = list(op.args) if op.args else [-1]
-            # Ensure batch dimension is preserved if not present
-            if len(shape_args) > 0 and shape_args[0] != -1:
-                shape_args = [-1] + shape_args
-            return f"{var}.view{tuple(shape_args)}"
-
-        elif op_name == "relu":
-            return f"F.relu({var})"
-
-        elif op_name == "leaky_relu":
-            negative_slope = op.args[0] if op.args else 0.01
-            return f"F.leaky_relu({var}, {negative_slope})"
-
-        elif op_name == "gelu":
-            return f"F.gelu({var})"
-
-        elif op_name == "tanh":
-            return f"torch.tanh({var})"
-
-        elif op_name == "sigmoid":
-            return f"torch.sigmoid({var})"
-
-        elif op_name == "softmax":
-            dim = op.args[0] if op.args else -1
-            return f"F.softmax({var}, dim={dim})"
-
-        elif op_name in ("batch_norm", "batchnorm"):
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            code = f"self.{layer_var}({var})"
-            if op.activation and op.activation.lower() == "residual":
-                return f"({code} + {var})"
-            return code
-
-        elif op_name in ("layer_norm", "layernorm"):
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            code = f"self.{layer_var}({var})"
-            if op.activation and op.activation.lower() == "residual":
-                return f"({code} + {var})"
-            return code
-
-        elif op_name == "embedding":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            code = f"self.{layer_var}({var})"
-            if op.activation and op.activation.lower() == "residual":
-                return f"({code} + {var})"
-            return code
-
-        elif op_name == "multihead_attention":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            # nn.MultiheadAttention returns (output, weights)
-            code = f"self.{layer_var}({var}, {var}, {var})[0]"
-            if op.activation and op.activation.lower() == "residual":
-                return f"({code} + {var})"
-            return code
-
-        elif op_name == "positional_encoding":
-            layer_var = self.layer_map.get(idx, self._get_layer_var_name(op_name))
-            return f"{var} + self.{layer_var}[:, :{var}.size(1), :]"
-
-        else:
-            # Default: treat as function call
-            args_str = ", ".join([str(a) for a in op.args])
-            return f"{op_name}({var}, {args_str})" if args_str else f"{op_name}({var})"
+        if name == "reshape":
+            dimensions = op.args if op.args else [-1]
+            if len(dimensions) == 1 and isinstance(dimensions[0], (tuple, list)):
+                dimensions = list(dimensions[0])
+            return f"{var}.reshape({var}.size(0), {', '.join(str(dim) for dim in dimensions)})"
+        if name == "global_avg_pool":
+            return f"{var}.mean(dim=tuple(range(2, {var}.dim())))"
+        if name in ACTIVATION_NAMES:
+            if name == "leaky_relu":
+                return f"F.leaky_relu({var}, {op.args[0] if op.args else 0.01})"
+            if name in ("softmax", "log_softmax"):
+                return f"F.{name}({var}, dim={op.args[0] if op.args else -1})"
+            return self._apply_activation(var, name)
+        if name == "multihead_attention":
+            return f"self._self_attention(self.{self.layer_map[idx]}, {var}, padding_mask, {op.kwargs.get('causal', False)!r})"
+        if name == "positional_encoding":
+            return f"{var} + self.{self.layer_map[idx]}[:, :{var}.size(1), :]"
+        raise ValueError(f"Unsupported operation: {op.operation}")
 
     def _apply_activation(self, code: str, activation: str) -> str:
-        """Apply activation function to code."""
-        activation = activation.lower()
-
-        if activation == "relu":
-            return f"F.relu({code})"
-        elif activation == "leaky_relu":
-            return f"F.leaky_relu({code}, 0.01)"
-        elif activation == "gelu":
-            return f"F.gelu({code})"
-        elif activation == "sigmoid":
-            return f"torch.sigmoid({code})"
-        elif activation == "tanh":
-            return f"torch.tanh({code})"
-        elif activation == "softmax":
-            return f"F.softmax({code}, dim=-1)"
-        else:
-            return code
+        name = activation.lower()
+        if name not in ACTIVATION_NAMES:
+            raise ValueError(f"Unsupported activation: {activation}")
+        if name in ("sigmoid", "tanh"):
+            return f"torch.{name}({code})"
+        if name in ("softmax", "log_softmax"):
+            return f"F.{name}({code}, dim=-1)"
+        return f"F.{'silu' if name == 'swish' else name}({code})"
 
     def _get_layer_var_name(self, base_name: str) -> str:
         """Get a unique variable name for a layer."""
@@ -565,289 +474,754 @@ class TorchCodeGenerator:
             self.layer_counter[base_name] += 1
             return base_name + str(self.layer_counter[base_name])
 
-    def _generate_training(self, train: TrainNode) -> str:
-        """Generate training function."""
-        lines = [
-            f"# Training: {train.model_name} on {train.dataset_name}",
-            f"def train_{train.model_name.lower()}():",
-        ]
-
-        # Model instantiation
-        lines.append(f"    model = {train.model_name}().to(device)")
-
-        # Loss function
+    def _generate_training(self, train: TrainNode, function_name: str) -> str:
+        """Generate an importable training function with injectable model and loaders."""
+        validate_training_options(train)
+        train.config = effective_training_config(train)
+        patience = train.config.get("patience", 10)
+        if type(patience) is not int or patience <= 0:
+            raise ValueError("patience must be a positive integer")
+        min_delta = train.config.get("min_delta", 0.0)
+        if not isinstance(min_delta, (int, float)) or min_delta < 0:
+            raise ValueError("min_delta must be nonnegative")
+        checkpoint_every = train.config.get("checkpoint_every")
+        if checkpoint_every is not None and (
+            type(checkpoint_every) is not int or checkpoint_every <= 0
+        ):
+            raise ValueError("checkpoint_every must be a positive integer")
+        checkpoint_dir = train.config.get("checkpoint_dir")
+        if checkpoint_dir is None and (checkpoint_every or train.config.get("save_best")):
+            checkpoint_dir = f"checkpoints/{train.model_name}"
+        resume_default = train.config.get("resume_from")
         loss_name = train.config.get("loss", "cross_entropy")
         loss_fn = self._get_loss_function(loss_name)
-        lines.append(f"    criterion = {loss_fn}")
-
-        # Optimizer
-        optimizer_spec = train.config.get("optimizer", "adam(lr=1e-3)")
-        optimizer_code = self._parse_optimizer(optimizer_spec)
-        lines.append(f"    optimizer = {optimizer_code}")
-
-        # Mixed precision
-        use_amp = train.config.get("mixed_precision", False)
-        if use_amp:
-            lines.append(f"    scaler = torch.cuda.amp.GradScaler()")
-
-        # Scheduler
-        if train.scheduler:
-            scheduler_code = self._generate_scheduler(train.scheduler)
-            lines.append(f"    scheduler = {scheduler_code}")
-
-        # Gradient clipping
-        grad_clip = train.config.get("gradient_clipping", None)
-
-        # Epochs
-        epochs = train.config.get("epochs", 5)
-
-        # Training loop
-        lines.extend(
-            [
-                f"    ",
-                f"    # Training loop",
-                f"    for epoch in range({epochs}):",
-                f"        model.train()",
-                f"        running_loss = 0.0",
-                f"        ",
-                f"        for batch_idx, (data, target) in enumerate({train.dataset_name}):",
-                f"            data, target = data.to(device), target.to(device)",
-                f"            ",
-                f"            optimizer.zero_grad()",
-                f"            ",
-            ]
+        classification = loss_fn.startswith(("nn.CrossEntropyLoss", "nn.NLLLoss"))
+        binary = loss_fn.startswith(("nn.BCELoss", "nn.BCEWithLogitsLoss"))
+        summary_metrics = []
+        metric_expressions = {}
+        perplexity = False
+        for metric in train.metrics:
+            name = metric.name.lower()
+            top_k = re.fullmatch(r"top([1-9][0-9]*)_accuracy", name)
+            if (classification or binary) and name in (
+                "precision",
+                "recall",
+                "f1",
+                "f1_score",
+                "auc",
+            ):
+                summary_metrics.append(name)
+            elif binary and name in ("accuracy", "binary_accuracy"):
+                threshold = 0 if loss_fn.startswith("nn.BCEWithLogitsLoss") else 0.5
+                metric_expressions[name] = (
+                    f"((output.detach() >= {threshold}) == target).sum().item()"
+                )
+            elif classification and name == "perplexity":
+                perplexity = True
+            elif classification and (name == "accuracy" or top_k):
+                k = int(top_k.group(1)) if top_k else 1
+                metric_expressions[name] = (
+                    f"(scores.topk(min({k}, scores.size(-1)), dim=-1).indices == labels[:, None]).any(-1).sum().item()"
+                )
+            elif not classification and name in ("mse", "mae"):
+                transform = "square" if name == "mse" else "abs"
+                metric_expressions[name] = f"(output.detach() - target).{transform}().sum().item()"
+            else:
+                raise ValueError(f"Unsupported or incompatible metric: {metric.name}")
+        optimizer = self._parse_optimizer(
+            train.config.get("optimizer", "adam"), default_lr=train.config.get("lr", 0.001)
         )
-
-        if use_amp:
+        epochs = train.config.get("epochs", 5)
+        if type(epochs) is not int or epochs <= 0:
+            raise ValueError("epochs must be a positive integer")
+        grad_clip = train.config.get("gradient_clip", train.config.get("gradient_clipping"))
+        if grad_clip is not None and (not isinstance(grad_clip, (int, float)) or grad_clip <= 0):
+            raise ValueError("gradient_clip must be positive")
+        lines = [
+            f"# Training: {train.model_name} on {train.dataset_name}",
+            f"def {function_name}(train_loader=None, validation_loader=None, model=None, resume_from={resume_default!r}, test_loader=None):",
+            f"    model = globals()[{train.model_name!r}]() if model is None else model",
+            "    model = model.to(device)",
+            "    if train_loader is None:",
+            f"        train_loader = _make_{train.dataset_name}_loader()",
+        ]
+        if "validate_on" in train.config:
             lines.extend(
                 [
-                    f"            with torch.cuda.amp.autocast():",
-                    f"                output = model(data)",
-                    f"                loss = criterion(output, target)",
-                    f"            ",
-                    f"            scaler.scale(loss).backward()",
+                    "    if validation_loader is None:",
+                    f"        validation_loader = _make_{train.config['validate_on']}_loader()",
                 ]
             )
-            if grad_clip:
-                lines.append(f"            scaler.unscale_(optimizer)")
-                lines.append(
-                    f"            torch.nn.utils.clip_grad_norm_(model.parameters(), {grad_clip})"
+        lines.extend(
+            [
+                f"    criterion = {loss_fn}.to(device=device, dtype=next(model.parameters()).dtype)",
+                f"    optimizer = {optimizer}",
+                "    model.training_history = []",
+                "    model.test_metrics = None",
+                "    scheduler = None",
+                "    scaler = None",
+                "    start_epoch = 0",
+                "    best_loss = float('inf')",
+                "    bad_epochs = 0",
+            ]
+        )
+        if summary_metrics:
+            if classification:
+                mode = (
+                    "multiclass_logprob"
+                    if loss_fn.startswith("nn.NLLLoss")
+                    else "multiclass_logits"
                 )
-            lines.append(f"            scaler.step(optimizer)")
-            lines.append(f"            scaler.update()")
+            else:
+                mode = (
+                    "binary_logits"
+                    if loss_fn.startswith("nn.BCEWithLogitsLoss")
+                    else "binary_probability"
+                )
+            lines.extend(classification_metric_helpers(mode, summary_metrics))
+        if metric_expressions:
+            lines.append("    def measure(output, target):")
+            if classification:
+                lines.extend(
+                    [
+                        "        labels = target.reshape(-1)",
+                        "        valid = labels != criterion.ignore_index",
+                        "        scores = output.detach().reshape(-1, output.size(-1))[valid]",
+                        "        labels = labels[valid]",
+                    ]
+                )
+            expressions = ", ".join(
+                f"{name!r}: {expression}" for name, expression in metric_expressions.items()
+            )
+            lines.append(f"        return {{{expressions}}}")
+        else:
+            lines.extend(["    def measure(output, target):", "        return {}"])
+        step_scheduler = (
+            train.scheduler is not None and train.scheduler.name.lower() == "warmup_cosine"
+        )
+        if perplexity or step_scheduler:
+            lines.append("    import math")
+        loss_expression = "compute_loss(output, target)"
+        lines.append("    def compute_loss(output, target):")
+        if classification:
+            lines.extend(
+                [
+                    "        if output.shape[:-1] != target.shape:",
+                    "            raise ValueError('Classification output and target shape mismatch')",
+                    "        return criterion(output.reshape(-1, output.size(-1)), target.reshape(-1))",
+                    "    def batch_counts(target):",
+                    "        labels = target[target != criterion.ignore_index]",
+                    "        weight = labels.numel() if criterion.weight is None else criterion.weight[labels].sum().item()",
+                    "        return weight, labels.numel()",
+                ]
+            )
         else:
             lines.extend(
                 [
-                    f"            output = model(data)",
-                    f"            loss = criterion(output, target)",
-                    f"            loss.backward()",
+                    "        if output.shape != target.shape:",
+                    "            raise ValueError('Output and target shape must match; implicit broadcasting is not supported')",
+                    *(
+                        [
+                            "        if not torch.all((target == 0) | (target == 1)):",
+                            "            raise ValueError('Binary classification metrics require targets of 0 or 1')",
+                        ]
+                        if binary
+                        and (
+                            summary_metrics
+                            or any(
+                                name in metric_expressions
+                                for name in ("accuracy", "binary_accuracy")
+                            )
+                        )
+                        else []
+                    ),
+                    "        return criterion(output, target)",
+                    "    def batch_counts(target):",
+                    "        return target.numel(), target.numel()",
                 ]
             )
-            if grad_clip:
-                lines.append(
-                    f"            torch.nn.utils.clip_grad_norm_(model.parameters(), {grad_clip})"
-                )
-            lines.append(f"            optimizer.step()")
-
         lines.extend(
             [
-                f"            ",
-                f"            running_loss += loss.item()",
-                f"            ",
-                f"            if batch_idx % 100 == 0:",
-                f"                print(f'Epoch {{epoch+1}}/{epochs}, Batch {{batch_idx}}, Loss: {{loss.item():.4f}}')",
+                "    def evaluate(loader, label):",
+                "        model.eval()",
+                "        total_loss = count = metric_count = 0.0",
+                f"        totals = dict.fromkeys({list(metric_expressions)!r}, 0.0)",
+                *(
+                    ["        summary = {'counts': None, 'scores': [], 'labels': []}"]
+                    if summary_metrics
+                    else []
+                ),
+                "        with torch.no_grad():",
+                "            for data, target in loader:",
+                "                data, target = data.to(device), target.to(device)",
+                "                weight, examples = batch_counts(target)",
+                "                if weight == 0:",
+                "                    continue",
+                "                output = model(data)",
+                "                loss = compute_loss(output, target)",
+                "                if not torch.isfinite(loss):",
+                "                    raise ValueError(f'{label} loss is not finite')",
+                *(
+                    ["                update_summary(summary, output, target)"]
+                    if summary_metrics
+                    else []
+                ),
+                "                total_loss += loss.item() * weight",
+                "                count += weight",
+                "                metric_count += examples",
+                "                for name, value in measure(output, target).items():",
+                "                    totals[name] += value",
+                "        if count == 0:",
+                "            raise ValueError(f'{label} data is empty')",
+                "        result = {'loss': total_loss / count}",
+                "        result.update({name: value / metric_count for name, value in totals.items()})",
             ]
         )
-
-        # Step scheduler
-        if train.scheduler:
-            if train.scheduler.name.lower() == "reduce_lr_on_plateau":
-                lines.append(f"        scheduler.step(avg_loss)")
-            else:
-                lines.append(f"        scheduler.step()")
-
-        lines.extend(
-            [
-                f"        ",
-                f"        avg_loss = running_loss / len({train.dataset_name})",
-                f"        print(f'Epoch {{epoch+1}}/{epochs} completed. Average Loss: {{avg_loss:.4f}}')",
-            ]
-        )
-
-        # Validation if specified
-        if "validate_on" in train.config:
-            val_dataset = train.config["validate_on"]
+        if perplexity:
+            lines.append(
+                "        result['perplexity'] = math.exp(result['loss']) if result['loss'] < 709 else float('inf')"
+            )
+        if summary_metrics:
+            lines.append("        result.update(finish_summary(summary))")
+        lines.append("        return result")
+        use_amp = train.config.get("mixed_precision", False)
+        if use_amp:
             lines.extend(
                 [
-                    f"        ",
-                    f"        # Validation",
-                    f"        model.eval()",
-                    f"        correct = 0",
-                    f"        total = 0",
-                    f"        ",
-                    f"        with torch.no_grad():",
-                    f"            for data, target in {val_dataset}:",
-                    f"                data, target = data.to(device), target.to(device)",
-                    f"                output = model(data)",
-                    f"                _, predicted = torch.max(output.data, 1)",
-                    f"                total += target.size(0)",
-                    f"                correct += (predicted == target).sum().item()",
-                    f"        ",
-                    f"        accuracy = 100 * correct / total",
-                    f"        print(f'Validation Accuracy: {{accuracy:.2f}}%')",
+                    "    amp_enabled = device.type == 'cuda'",
+                    "    scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled)",
                 ]
             )
-
-        lines.append("    ")
+        if train.scheduler:
+            lines.append(f"    scheduler = {self._generate_scheduler(train.scheduler)}")
+        contract = {
+            "model": train.model_name,
+            "model_code": hashlib.sha256(
+                self._generate_model(
+                    next(model for model in self.program.models if model.name == train.model_name)
+                ).encode()
+            ).hexdigest(),
+            "optimizer": optimizer.split("(", 1)[0],
+            "loss": loss_fn,
+            "scheduler": self._generate_scheduler(train.scheduler) if train.scheduler else None,
+            "mixed_precision": bool(use_amp),
+        }
+        lines.append("    state_loaders = {'train': train_loader, 'validation': validation_loader}")
+        lines.extend(DATA_STATE_HELPERS.strip("\n").splitlines())
+        lines.append(f"    if {checkpoint_dir is not None!r} or resume_from is not None:")
+        lines.append("        validate_data_state()")
+        lines.extend(
+            [
+                "    import random",
+                f"    contract = {contract!r}",
+                "    if resume_from is not None:",
+                "        state = torch.load(resume_from, map_location='cpu', weights_only=True)",
+                "        if state.get('format') != 1 or state.get('contract') != contract:",
+                "            raise ValueError('Checkpoint is incompatible with this training configuration')",
+                "        model.load_state_dict(state['model'])",
+                "        if scheduler is not None:",
+                "            scheduler.load_state_dict(state['scheduler'])",
+                "        optimizer.load_state_dict(state['optimizer'])",
+                "        if scaler is not None:",
+                "            scaler.load_state_dict(state['scaler'])",
+                "        model.training_history = state['history']",
+                "        start_epoch = state['epoch']",
+                "        best_loss = state['best_loss']",
+                "        bad_epochs = state['bad_epochs']",
+                "        torch.set_rng_state(state['torch_rng'])",
+                "        random.setstate(state['python_rng'])",
+                "        if torch.cuda.is_available() and state['cuda_rng'] is not None:",
+                "            torch.cuda.set_rng_state_all(state['cuda_rng'])",
+                "        if state['loader_rng'] is not None:",
+                "            generator = getattr(train_loader, 'generator', None)",
+                "            if generator is None:",
+                "                raise ValueError('Checkpoint requires a loader with a generator')",
+                "            generator.set_state(state['loader_rng'])",
+                "        if state.get('data_state') is not None:",
+                "            restore_data_state(state['data_state'])",
+            ]
+        )
+        if checkpoint_dir is not None:
+            lines.extend(self._artifact_writer())
+            lines.append(f"    checkpoint_dir = Path({checkpoint_dir!r})")
+        lines.extend(
+            [
+                f"    for epoch in range(start_epoch, {epochs}):",
+                "        model.train()",
+                *(
+                    ["        summary = {'counts': None, 'scores': [], 'labels': []}"]
+                    if summary_metrics
+                    else []
+                ),
+                "        running_loss = 0.0",
+                "        count = metric_count = 0",
+                f"        totals = dict.fromkeys({list(metric_expressions)!r}, 0.0)",
+                "        for data, target in train_loader:",
+                "            data, target = data.to(device), target.to(device)",
+                "            weight, examples = batch_counts(target)",
+                "            if weight == 0:",
+                "                continue",
+                "            optimizer.zero_grad(set_to_none=True)",
+            ]
+        )
+        if use_amp:
+            lines.extend(
+                [
+                    "            with torch.autocast(device_type=device.type, enabled=amp_enabled):",
+                    "                output = model(data)",
+                    f"                loss = {loss_expression}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "            output = model(data)",
+                    f"            loss = {loss_expression}",
+                ]
+            )
+        lines.extend(
+            [
+                "            if not torch.isfinite(loss):",
+                "                raise ValueError('Training loss is not finite')",
+                (
+                    "            scaler.scale(loss).backward()"
+                    if use_amp
+                    else "            loss.backward()"
+                ),
+            ]
+        )
+        if grad_clip is not None:
+            if use_amp:
+                lines.append("            scaler.unscale_(optimizer)")
+            lines.append(
+                f"            torch.nn.utils.clip_grad_norm_(model.parameters(), {grad_clip})"
+            )
+        lines.extend(
+            [
+                *(["            previous_scale = scaler.get_scale()"] if use_amp else []),
+                "            scaler.step(optimizer)" if use_amp else "            optimizer.step()",
+            ]
+        )
+        if use_amp:
+            lines.append("            scaler.update()")
+        if step_scheduler:
+            if use_amp:
+                lines.extend(
+                    [
+                        "            if scaler.get_scale() >= previous_scale:",
+                        "                scheduler.step()",
+                    ]
+                )
+            else:
+                lines.append("            scheduler.step()")
+        lines.extend(
+            [
+                *(
+                    ["            update_summary(summary, output, target)"]
+                    if summary_metrics
+                    else []
+                ),
+                "            running_loss += loss.item() * weight",
+                "            count += weight",
+                "            metric_count += examples",
+                "            for name, value in measure(output, target).items():",
+                "                totals[name] += value",
+                "        if count == 0:",
+                "            raise ValueError('Training data is empty')",
+                "        avg_loss = running_loss / count",
+                "        record = {'epoch': epoch + 1, 'loss': avg_loss}",
+                "        record.update({name: value / metric_count for name, value in totals.items()})",
+                *(["        record.update(finish_summary(summary))"] if summary_metrics else []),
+                "        if validation_loader is not None:",
+                "            validation = evaluate(validation_loader, 'Validation')",
+                "            record.update({'val_' + name: value for name, value in validation.items()})",
+            ]
+        )
+        if perplexity:
+            lines.extend(
+                [
+                    "        record['perplexity'] = math.exp(avg_loss) if avg_loss < 709 else float('inf')",
+                    "        if 'val_loss' in record:",
+                    "            record['val_perplexity'] = math.exp(record['val_loss']) if record['val_loss'] < 709 else float('inf')",
+                ]
+            )
+        if train.scheduler and not step_scheduler:
+            if train.scheduler.name.lower() in ("reduce_lr_on_plateau", "reduce_on_plateau"):
+                lines.append("        scheduler.step(record.get('val_loss', avg_loss))")
+            else:
+                lines.append("        scheduler.step()")
+        lines.extend(
+            [
+                "        record['lr'] = optimizer.param_groups[0]['lr']",
+                "        model.training_history.append(record)",
+                f"        print(f'Epoch {{epoch + 1}}/{epochs}: loss={{avg_loss:.6f}}')",
+            ]
+        )
+        lines.extend(
+            [
+                "        monitored_loss = record.get('val_loss', avg_loss)",
+                f"        improved = monitored_loss < best_loss - {min_delta}",
+                "        if improved:",
+                "            best_loss = monitored_loss",
+                "            bad_epochs = 0",
+                "        else:",
+                "            bad_epochs += 1",
+            ]
+        )
+        if checkpoint_dir is not None:
+            lines.extend(
+                [
+                    "        loader_generator = getattr(train_loader, 'generator', None)",
+                    "        state = {",
+                    "            'format': 1, 'contract': contract, 'epoch': epoch + 1,",
+                    "            'model': model.state_dict(), 'optimizer': optimizer.state_dict(),",
+                    "            'scheduler': scheduler.state_dict() if scheduler is not None else None,",
+                    "            'scaler': scaler.state_dict() if scaler is not None else None,",
+                    "            'history': model.training_history, 'best_loss': best_loss, 'bad_epochs': bad_epochs,",
+                    "            'torch_rng': torch.get_rng_state(), 'python_rng': random.getstate(),",
+                    "            'cuda_rng': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,",
+                    "            'loader_rng': loader_generator.get_state() if loader_generator is not None else None,",
+                    "            'data_state': capture_data_state(),",
+                    "        }",
+                    "        save_artifact(state, checkpoint_dir / 'last.pt')",
+                ]
+            )
+            if train.config.get("save_best"):
+                lines.extend(
+                    [
+                        "        if improved:",
+                        "            save_artifact(state, checkpoint_dir / 'best.pt')",
+                    ]
+                )
+            if checkpoint_every is not None:
+                lines.extend(
+                    [
+                        f"        if (epoch + 1) % {checkpoint_every} == 0:",
+                        "            save_artifact(state, checkpoint_dir / f'epoch_{epoch + 1:04d}.pt')",
+                    ]
+                )
+        if train.config.get("early_stopping"):
+            lines.extend([f"        if bad_epochs >= {patience}:", "            break"])
+        if "test_on" in train.config:
+            lines.extend(
+                [
+                    "    if test_loader is None:",
+                    f"        test_loader = _make_{train.config['test_on']}_loader()",
+                ]
+            )
+        lines.extend(
+            [
+                "    if test_loader is not None:",
+                "        model.test_metrics = evaluate(test_loader, 'Test')",
+                "        print({'test': model.test_metrics})",
+            ]
+        )
         lines.append("    return model")
-
         return "\n".join(lines)
+
+    def _artifact_writer(self) -> List[str]:
+        """Emit the shared atomic writer inside a generated training function."""
+        return [
+            "    from pathlib import Path",
+            "    import os",
+            "    import tempfile",
+            "    def save_artifact(value, destination, writer=torch.save):",
+            "        destination.parent.mkdir(parents=True, exist_ok=True)",
+            "        temporary = None",
+            "        try:",
+            "            with tempfile.NamedTemporaryFile(mode='wb', dir=destination.parent, prefix='.' + destination.name, suffix='.tmp', delete=False) as stream:",
+            "                temporary = Path(stream.name)",
+            "                writer(value, stream)",
+            "            os.replace(temporary, destination)",
+            "        finally:",
+            "            if temporary is not None:",
+            "                temporary.unlink(missing_ok=True)",
+        ]
+
+    def _configuration_call(self, spec: str):
+        """Accept named configuration calls with literal arguments, never Python code."""
+        return configuration_call(spec)
 
     def _get_loss_function(self, loss_name: str) -> str:
-        """Map loss name to PyTorch loss function."""
-        loss_map = {
-            "cross_entropy": "nn.CrossEntropyLoss()",
-            "mse": "nn.MSELoss()",
-            "bce": "nn.BCELoss()",
-            "nll": "nn.NLLLoss()",
-        }
-        return loss_map.get(loss_name, "nn.CrossEntropyLoss()")
-
-    def _parse_optimizer(self, optimizer_spec: str) -> str:
-        """Parse optimizer specification into PyTorch code."""
-        # Examples: "adam(lr=1e-3)", "sgd(lr=0.01, momentum=0.9)"
-        if not isinstance(optimizer_spec, str):
-            optimizer_spec = str(optimizer_spec)
-
-        match = re.match(r"(\w+)\((.*)\)", optimizer_spec)
-        if match:
-            opt_name = match.group(1).lower()
-            args_str = match.group(2)
-
-            # Build optimizer
-            opt_class = {
-                "adam": "optim.Adam",
-                "sgd": "optim.SGD",
-                "adamw": "optim.AdamW",
-                "rmsprop": "optim.RMSprop",
-            }.get(opt_name, "optim.Adam")
-
-            # Parse arguments
-            if args_str:
-                return f"{opt_class}(model.parameters(), {args_str})"
+        kind, kwargs = loss_configuration(loss_name)
+        arguments = []
+        for key, value in kwargs.items():
+            if key in ("weight", "pos_weight") and value is not None:
+                arguments.append(f"{key}=torch.tensor({value!r}, dtype=torch.float32)")
             else:
-                return f"{opt_class}(model.parameters())"
+                arguments.append(f"{key}={value!r}")
+        return f"nn.{kind}({', '.join(arguments)})"
 
-        return "optim.Adam(model.parameters(), lr=1e-3)"
+    def _parse_optimizer(self, optimizer_spec: str, default_lr=0.001) -> str:
+        kind, kwargs = optimizer_configuration(optimizer_spec, default_lr)
+        arguments = [f"{key}={value!r}" for key, value in kwargs.items()]
+        return f"optim.{kind}(model.parameters(), {', '.join(arguments)})"
 
-    def _generate_main(self, train: TrainNode) -> str:
-        """Generate main execution block."""
-        lines = [
-            'if __name__ == "__main__":',
-            f"    print('Starting training: {train.model_name} on {train.dataset_name}')",
-            f"    model = train_{train.model_name.lower()}()",
-            f"    print('Training completed!')",
-        ]
-        return "\n".join(lines)
-
-    def _generate_gan_training(self, train: TrainGANNode) -> str:
-        """Generate specialized GAN training function."""
-        gen = train.generator_name
-        disc = train.discriminator_name
+    def _generate_gan_training(self, train: TrainGANNode, function_name: str) -> str:
+        """Generate alternating GAN updates with separate losses and frozen phases."""
+        validate_training_options(train)
+        metrics = train.config.get("metrics", list(GAN_METRICS))
+        gen, disc = train.generator_name, train.discriminator_name
+        model = next((model for model in self.program.models if model.name == gen), None)
+        if model is None or not any(model.name == disc for model in self.program.models):
+            raise ValueError("GAN training requires defined generator and discriminator models")
+        shape = tuple(model.config.get("input_shape", (1, 28, 28)))
+        if "latent_dim" in train.config and shape != (train.config["latent_dim"],):
+            raise ValueError("latent_dim must match the generator input_shape")
+        epochs = train.config.get("epochs", 100)
+        d_steps = train.config.get("discriminator_steps", 1)
+        g_steps = train.config.get("generator_steps", 1)
+        sample_every = train.config.get("generate_samples_every")
+        num_samples = train.config.get("num_samples", 64)
+        for name, value in (
+            ("epochs", epochs),
+            ("discriminator_steps", d_steps),
+            ("generator_steps", g_steps),
+            ("num_samples", num_samples),
+        ):
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if sample_every is not None and (type(sample_every) is not int or sample_every <= 0):
+            raise ValueError("generate_samples_every must be a positive integer")
+        checkpoint_every = train.config.get("checkpoint_every")
+        if checkpoint_every is not None and (
+            type(checkpoint_every) is not int or checkpoint_every <= 0
+        ):
+            raise ValueError("checkpoint_every must be a positive integer")
+        checkpoint_dir = train.config.get("checkpoint_dir")
+        if checkpoint_dir is None and checkpoint_every is not None:
+            checkpoint_dir = f"checkpoints/{gen}_{disc}"
+        sample_format = train.config.get("sample_format", "tensor")
+        if sample_format not in ("tensor", "png", "both"):
+            raise ValueError("sample_format must be tensor, png or both")
+        if sample_format != "tensor":
+            output_shape = lower_model(model).outputs[0].shape
+            if output_shape is None or len(output_shape) != 3 or output_shape[0] not in (1, 3):
+                raise ValueError(
+                    "PNG samples require generator output (1 or 3 channels, height, width)"
+                )
+        sample_range = train.config.get("sample_range", (-1.0, 1.0))
+        if (
+            not isinstance(sample_range, (tuple, list))
+            or len(sample_range) != 2
+            or any(
+                type(value) not in (int, float) or not math.isfinite(value)
+                for value in sample_range
+            )
+            or sample_range[0] >= sample_range[1]
+        ):
+            raise ValueError("sample_range requires two finite increasing numbers")
+        resume_default = train.config.get("resume_from")
+        loss_g = self._get_loss_function(train.config.get("generator_loss", "binary_cross_entropy"))
+        loss_d = self._get_loss_function(
+            train.config.get("discriminator_loss", "binary_cross_entropy")
+        )
+        if not all(
+            loss.startswith(("nn.BCELoss", "nn.BCEWithLogitsLoss", "nn.MSELoss"))
+            for loss in (loss_g, loss_d)
+        ):
+            raise ValueError("GAN losses must be binary_cross_entropy, bce_with_logits or mse")
+        opt_g = self._parse_optimizer(
+            train.config.get("generator_optimizer", "adam(lr=0.0002, betas=(0.5, 0.999))")
+        ).replace("model.parameters()", "netG.parameters()")
+        opt_d = self._parse_optimizer(
+            train.config.get("discriminator_optimizer", "adam(lr=0.0002, betas=(0.5, 0.999))")
+        ).replace("model.parameters()", "netD.parameters()")
         lines = [
             f"# GAN Training: {gen} and {disc} on {train.dataset_name}",
-            f"def train_gan_{gen.lower()}_{disc.lower()}():",
-            f"    # Models",
-            f"    netG = {gen}().to(device)",
-            f"    netD = {disc}().to(device)",
-            f"    ",
-            f"    # Binary Cross Entropy loss",
-            f"    criterion = nn.BCELoss()",
-            f"    ",
-            f"    # Optimizers",
-            f"    optimizerG = {self._parse_optimizer(train.config.get('generator_optimizer', 'adam(lr=2e-4, betas=(0.5, 0.999))')).replace('model.parameters()', 'netG.parameters()')}",
-            f"    optimizerD = {self._parse_optimizer(train.config.get('discriminator_optimizer', 'adam(lr=2e-4, betas=(0.5, 0.999))')).replace('model.parameters()', 'netD.parameters()')}",
-            f"    ",
-            f"    epochs = {train.config.get('epochs', 100)}",
-            f"    ",
-            f"    for epoch in range(epochs):",
-            f"        for i, (data, _) in enumerate({train.dataset_name}):",
-            f"            # 1. Update Discriminator: maximize log(D(x)) + log(1 - D(G(z)))",
-            f"            netD.zero_grad()",
-            f"            real_cpu = data.to(device)",
-            f"            batch_size = real_cpu.size(0)",
-            f"            label = torch.full((batch_size,), 1.0, dtype=torch.float, device=device)",
-            f"            ",
-            f"            output = netD(real_cpu).view(-1)",
-            f"            errD_real = criterion(output, label)",
-            f"            errD_real.backward()",
-            f"            ",
-            f"            noise = torch.randn(batch_size, {train.config.get('latent_dim', 100)}, 1, 1, device=device)",
-            f"            # Handle 1D noise if needed",
-            f"            if len(netG.config.get('input_shape', (100,))) == 1:",
-            f"                noise = noise.view(batch_size, -1)",
-            f"            ",
-            f"            fake = netG(noise)",
-            f"            label.fill_(0.0)",
-            f"            output = netD(fake.detach()).view(-1)",
-            f"            errD_fake = criterion(output, label)",
-            f"            errD_fake.backward()",
-            f"            optimizerD.step()",
-            f"            ",
-            f"            # 2. Update Generator: maximize log(D(G(z)))",
-            f"            netG.zero_grad()",
-            f"            label.fill_(1.0)",
-            f"            output = netD(fake).view(-1)",
-            f"            errG = criterion(output, label)",
-            f"            errG.backward()",
-            f"            optimizerG.step()",
-            f"            ",
-            f"            if i % 50 == 0:",
-            f"                print(f'[{{epoch}}/{{epochs}}][{{i}}/{{len({train.dataset_name})}}] Loss_D: {{errD_real.item()+errD_fake.item():.4f}} Loss_G: {{errG.item():.4f}}')",
-            f"    ",
-            f"    return netG, netD",
+            f"def {function_name}(train_loader=None, generator=None, discriminator=None, resume_from={resume_default!r}):",
+            f"    netG = (globals()[{gen!r}]() if generator is None else generator).to(device)",
+            f"    netD = (globals()[{disc!r}]() if discriminator is None else discriminator).to(device)",
+            "    if train_loader is None:",
+            f"        train_loader = _make_{train.dataset_name}_loader()",
+            f"    criterionG = {loss_g}.to(device=device, dtype=next(netD.parameters()).dtype)",
+            f"    criterionD = {loss_d}.to(device=device, dtype=next(netD.parameters()).dtype)",
+            f"    optimizerG = {opt_g}",
+            f"    optimizerD = {opt_d}",
+            "    history = []",
+            "    start_epoch = 0",
         ]
+        if checkpoint_dir is not None or sample_every is not None:
+            lines.extend(self._artifact_writer())
+        if checkpoint_dir is not None:
+            lines.append(f"    checkpoint_dir = Path({checkpoint_dir!r})")
+        contract = {
+            "generator": hashlib.sha256(self._generate_model(model).encode()).hexdigest(),
+            "discriminator": hashlib.sha256(
+                self._generate_model(
+                    next(item for item in self.program.models if item.name == disc)
+                ).encode()
+            ).hexdigest(),
+            "optimizer_g": opt_g.split("(", 1)[0],
+            "optimizer_d": opt_d.split("(", 1)[0],
+            "loss_g": loss_g,
+            "loss_d": loss_d,
+            "g_steps": g_steps,
+            "d_steps": d_steps,
+            "metrics": metrics,
+        }
+        lines.append("    state_loaders = {'train': train_loader}")
+        lines.extend(DATA_STATE_HELPERS.strip("\n").splitlines())
+        lines.append(f"    if {checkpoint_dir is not None!r} or resume_from is not None:")
+        lines.append("        validate_data_state()")
+        lines.extend(
+            [
+                "    import random",
+                f"    contract = {contract!r}",
+                "    if resume_from is not None:",
+                "        state = torch.load(resume_from, map_location='cpu', weights_only=True)",
+                "        if state.get('format') != 'gan-1' or state.get('contract') != contract:",
+                "            raise ValueError('GAN checkpoint is incompatible with this training configuration')",
+                "        netG.load_state_dict(state['generator'])",
+                "        netD.load_state_dict(state['discriminator'])",
+                "        optimizerG.load_state_dict(state['optimizer_g'])",
+                "        optimizerD.load_state_dict(state['optimizer_d'])",
+                "        history = state['history']",
+                "        start_epoch = state['epoch']",
+                "        torch.set_rng_state(state['torch_rng'])",
+                "        random.setstate(state['python_rng'])",
+                "        if torch.cuda.is_available() and state['cuda_rng'] is not None:",
+                "            torch.cuda.set_rng_state_all(state['cuda_rng'])",
+                "        if state['loader_rng'] is not None:",
+                "            loader_generator = getattr(train_loader, 'generator', None)",
+                "            if loader_generator is None:",
+                "                raise ValueError('Checkpoint requires a loader with a generator')",
+                "            loader_generator.set_state(state['loader_rng'])",
+                "        if state.get('data_state') is not None:",
+                "            restore_data_state(state['data_state'])",
+                "    netG.training_history = netD.training_history = history",
+            ]
+        )
+        if sample_every is not None:
+            lines.extend(
+                [
+                    "    from pathlib import Path",
+                    f"    sample_dir = Path({train.config.get('save_dir', './generated_samples')!r})",
+                    "    sample_dir.mkdir(parents=True, exist_ok=True)",
+                    f"    fixed_noise = torch.randn(({num_samples}, *{shape!r}), device=device, dtype=next(netG.parameters()).dtype, generator=torch.Generator(device=device).manual_seed(0))",
+                ]
+            )
+        lines.extend(
+            [
+                f"    for epoch in range(start_epoch, {epochs}):",
+                "        netD.train()",
+                "        g_loss = d_loss = real_score = fake_score = 0.0",
+                "        count = 0",
+                "        for data, _ in train_loader:",
+                "            real = data.to(device)",
+                "            batch = real.size(0)",
+                "            if batch == 0:",
+                "                continue",
+                "            optimizerG.zero_grad(set_to_none=True)",
+                "            netG.eval()",
+                f"            for _ in range({d_steps}):",
+                "                optimizerD.zero_grad(set_to_none=True)",
+                "                with torch.no_grad():",
+                f"                    fake = netG(torch.randn((batch, *{shape!r}), device=device, dtype=next(netG.parameters()).dtype))",
+                "                real_output, fake_output = netD(real), netD(fake.detach())",
+                "                lossD = criterionD(real_output, torch.ones_like(real_output)) + criterionD(fake_output, torch.zeros_like(fake_output))",
+                "                if not torch.isfinite(lossD):",
+                "                    raise ValueError('Discriminator loss is not finite')",
+                "                lossD.backward()",
+                "                optimizerD.step()",
+                f"                d_loss += lossD.item() * batch / {d_steps}",
+                f"                real_score += real_output.detach().mean().item() * batch / {d_steps}",
+                f"                fake_score += fake_output.detach().mean().item() * batch / {d_steps}",
+                "            flags = [parameter.requires_grad for parameter in netD.parameters()]",
+                "            netD.requires_grad_(False)",
+                "            netD.eval()",
+                "            netG.train()",
+                "            try:",
+                f"                for _ in range({g_steps}):",
+                "                    optimizerG.zero_grad(set_to_none=True)",
+                f"                    fake = netG(torch.randn((batch, *{shape!r}), device=device, dtype=next(netG.parameters()).dtype))",
+                "                    output = netD(fake)",
+                "                    lossG = criterionG(output, torch.ones_like(output))",
+                "                    if not torch.isfinite(lossG):",
+                "                        raise ValueError('Generator loss is not finite')",
+                "                    lossG.backward()",
+                "                    optimizerG.step()",
+                f"                    g_loss += lossG.item() * batch / {g_steps}",
+                "            finally:",
+                "                for parameter, flag in zip(netD.parameters(), flags):",
+                "                    parameter.requires_grad_(flag)",
+                "                netD.train()",
+                "            count += batch",
+                "        if count == 0:",
+                "            raise ValueError('GAN training data is empty')",
+                "        record = {'epoch': epoch + 1, 'generator_loss': g_loss / count, 'discriminator_loss': d_loss / count, 'real_score': real_score / count, 'fake_score': fake_score / count}",
+                f"        record = {{key: value for key, value in record.items() if key == 'epoch' or key in {metrics!r}}}",
+                "        history.append(record)",
+                "        print(record)",
+            ]
+        )
+        if sample_every is not None:
+            lines.extend(
+                [
+                    f"        if (epoch + 1) % {sample_every} == 0:",
+                    "            netG.eval()",
+                    "            with torch.no_grad():",
+                    "                samples = netG(fixed_noise).cpu()",
+                ]
+            )
+            if sample_format in ("tensor", "both"):
+                lines.append(
+                    "            save_artifact(samples, sample_dir / f'samples_{epoch + 1:04d}.pt')"
+                )
+            if sample_format in ("png", "both"):
+                lines.extend(
+                    [
+                        "            from torchvision.utils import save_image",
+                        f"            save_artifact(samples, sample_dir / f'samples_{{epoch + 1:04d}}.png', lambda value, stream: save_image(value, stream, format='PNG', normalize=True, value_range={tuple(sample_range)!r}))",
+                    ]
+                )
+            lines.append("            netG.train()")
+        if checkpoint_dir is not None:
+            lines.extend(
+                [
+                    "        loader_generator = getattr(train_loader, 'generator', None)",
+                    "        state = {",
+                    "            'format': 'gan-1', 'contract': contract, 'epoch': epoch + 1,",
+                    "            'generator': netG.state_dict(), 'discriminator': netD.state_dict(),",
+                    "            'optimizer_g': optimizerG.state_dict(), 'optimizer_d': optimizerD.state_dict(),",
+                    "            'history': history, 'torch_rng': torch.get_rng_state(), 'python_rng': random.getstate(),",
+                    "            'cuda_rng': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,",
+                    "            'loader_rng': loader_generator.get_state() if loader_generator is not None else None,",
+                    "            'data_state': capture_data_state(),",
+                    "        }",
+                    "        save_artifact(state, checkpoint_dir / 'last.pt')",
+                ]
+            )
+            if checkpoint_every is not None:
+                lines.extend(
+                    [
+                        f"        if (epoch + 1) % {checkpoint_every} == 0:",
+                        "            save_artifact(state, checkpoint_dir / f'epoch_{epoch + 1:04d}.pt')",
+                    ]
+                )
+        lines.append("    return netG, netD")
         return "\n".join(lines)
 
     def _generate_scheduler(self, scheduler: LRScheduler) -> str:
         """Generate PyTorch LR scheduler code."""
         name = scheduler.name.lower()
-        params = scheduler.params
-        args = params.get("args", [])
-        kwargs = params.get("kwargs", {})
+        kind, kwargs = scheduler_configuration(scheduler)
+        if name == "warmup_cosine":
+            warmup = kwargs.get("warmup_steps", 0)
+            maximum = kwargs.get("max_steps")
+            decay = (
+                f"0.5 * (1 + math.cos(math.pi * min(1.0, (step - {warmup}) / {maximum - warmup})))"
+            )
+            factor = f"step / {warmup} if step < {warmup} else {decay}" if warmup else decay
+            return f"optim.lr_scheduler.LambdaLR(optimizer, lambda step: {factor})"
 
-        # Build kwargs string
-        kwargs_str = ", ".join([f"{k}={self._format_value(v)}" for k, v in kwargs.items()])
-        if args:
-            args_str = ", ".join([self._format_value(a) for a in args])
-            combined = f"{args_str}, {kwargs_str}" if kwargs_str else args_str
-        else:
-            combined = kwargs_str
-
-        # Map name to PyTorch scheduler
-        sched_class = {
-            "step_lr": "optim.lr_scheduler.StepLR",
-            "exponential_lr": "optim.lr_scheduler.ExponentialLR",
-            "cosine_annealing": "optim.lr_scheduler.CosineAnnealingLR",
-            "reduce_lr_on_plateau": "optim.lr_scheduler.ReduceLROnPlateau",
-        }.get(name, "optim.lr_scheduler.StepLR")
-
-        return f"{sched_class}(optimizer, {combined})"
-
-    def _generate_gan_training_main(self, train: TrainGANNode) -> str:
-        """Generate main execution block for GAN."""
-        lines = [
-            'if __name__ == "__main__":',
-            f"    print('Starting GAN training...')",
-            f"    netG, netD = train_gan_{train.generator_name.lower()}_{train.discriminator_name.lower()}()",
-            f"    print('Training completed!')",
-        ]
-        return "\n".join(lines)
+        options = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
+        return f"optim.lr_scheduler.{kind}(optimizer, {options})"
 
     def _format_value(self, value: Any) -> str:
         """Format a value for code generation."""
         if isinstance(value, str):
-            return f'"{value}"'
+            return repr(value)
         elif isinstance(value, bool):
             return str(value)
         elif isinstance(value, (int, float)):

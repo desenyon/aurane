@@ -108,6 +108,7 @@ def main():
     # Visualize command
     visualize_parser = subparsers.add_parser("visualize", help="Visualize model architecture")
     visualize_parser.add_argument("input", help="Input .aur file")
+    visualize_parser.add_argument("--model", default=None, help="Select one model for export")
     visualize_parser.add_argument(
         "--format",
         default="rich",
@@ -170,6 +171,9 @@ def main():
     # Benchmark command
     benchmark_parser = subparsers.add_parser("benchmark", help="Benchmark compilation")
     benchmark_parser.add_argument("input", help="Input .aur file")
+    benchmark_parser.add_argument(
+        "--json", action="store_true", help="Emit timings in seconds as JSON"
+    )
     benchmark_parser.add_argument(
         "-i", "--iterations", type=int, default=10, help="Number of iterations"
     )

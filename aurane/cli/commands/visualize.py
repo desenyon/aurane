@@ -4,7 +4,7 @@ Visualize command for Aurane CLI.
 
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
-from ...parser import parse_aurane
+from ...symbols import parse_resolved
 from ...visualizer import (
     visualize_model_architecture,
     render_model_architecture_mermaid,
@@ -22,10 +22,15 @@ def cmd_visualize(args):
     try:
         input_file = validate_file(args.input, [".aur"])
         source = input_file.read_text(encoding="utf-8")
-        program = parse_aurane(source)
+        program = parse_resolved(source)
+        selected = getattr(args, "model", None)
+        if selected:
+            program.models = [model for model in program.models if model.name == selected]
+        if args.output and len(program.models) > 1:
+            raise ValueError("Multiple models found; use --model to select the exported model")
 
         if not program.models:
-            console.print("[yellow]No models found in file.[/yellow]")
+            print("No matching models found.")
             return 1
 
         for model in program.models:

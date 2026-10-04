@@ -8,6 +8,7 @@ from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file, get_file_stats
 from ...parser import parse_aurane
+from ...symbols import resolve_program
 from ...visualizer import print_model_summary
 from ...ast import ForwardGraphBlock
 
@@ -46,7 +47,7 @@ def cmd_inspect(args):
 
         if ast.models and args.verbose:
             console.print("\n[bold cyan]=== Model Details ===[/bold cyan]\n")
-            for model in ast.models:
+            for model in resolve_program(ast).models:
                 print_model_summary(model)
 
         return 0

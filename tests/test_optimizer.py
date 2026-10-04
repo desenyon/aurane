@@ -287,6 +287,25 @@ class TestOptimizationPreservation:
         config = result.program.models[0].config
         assert "input_shape" in config or config.get("input_shape") is not None
 
+    def test_duplicate_relu_removed_without_mutating_input(self):
+        source = """model Net:
+    input_shape = (4,)
+    def forward(x):
+        x -> dense(4).relu -> relu() -> relu() -> dense(2)
+"""
+        program = parse_aurane(source)
+        result = optimize_ast(program)
+        assert len(program.models[0].forward_block.operations) == 4
+        assert len(result.program.models[0].forward_block.operations) == 2
+        assert result.stats["eliminations"] == 2
+        again = optimize_ast(result.program)
+        assert again.program == result.program
+        assert again.applied_optimizations == []
+
+    def test_invalid_optimization_level_rejected(self):
+        with pytest.raises(ValueError, match="Optimization level"):
+            optimize_ast(parse_aurane(""), level=3)
+
 
 class TestEdgeCases:
     """Tests for edge cases in optimization."""

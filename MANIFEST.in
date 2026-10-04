@@ -1,0 +1,4 @@
+include CHANGELOG.md
+recursive-include examples *.aur
+recursive-include docs *.md *.svg
+recursive-include scripts *.py

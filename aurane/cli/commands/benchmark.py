@@ -4,64 +4,59 @@ Benchmark command for Aurane CLI.
 
 import time
 import tempfile
-from pathlib import Path
-from ..ui import console, RICH_AVAILABLE, get_progress
-from ..utils import validate_file, get_file_stats
+import os
+import json
+from ..ui import console, RICH_AVAILABLE
+from ..utils import validate_file
 from ...parser import parse_aurane
-from ...compiler import compile_file
+from ...compiler import compile_source
 
 try:
     from rich.table import Table
-    from rich.progress import SpinnerColumn, TextColumn, BarColumn
 except ImportError:
     pass
 
 
 def cmd_benchmark(args):
-    """Benchmark compilation performance."""
-    if not RICH_AVAILABLE or console is None:
-        print("Benchmark command requires 'rich' library. Install with: pip install rich")
-        return 1
-
+    """Measure parsing separately from complete cold and cached compilation."""
+    json_output = getattr(args, "json", False)
     try:
-        file_path = validate_file(args.input, [".aur"])
-        source = file_path.read_text()
-
-        console.print(f"[cyan]Benchmarking:[/cyan] {args.input}")
-        console.print(f"[dim]Running {args.iterations} iterations...[/dim]\n")
-
-        times = {"parse": [], "compile": [], "total": []}
-
-        progress = get_progress()
-        if progress:
-            with progress:
-                task = progress.add_task("[cyan]Benchmarking...", total=args.iterations)
-
-                for i in range(args.iterations):
-                    # Parse timing
+        if args.iterations <= 0:
+            raise ValueError("iterations must be a positive integer")
+        file_path = validate_file(args.input, [".aur"]).resolve()
+        source = file_path.read_text(encoding="utf-8")
+        times = {"parse": [], "cold_compile": [], "warm_compile": []}
+        original_directory = os.getcwd()
+        with tempfile.TemporaryDirectory(prefix="aurane-benchmark-") as directory:
+            try:
+                os.chdir(directory)
+                compile_source(source)  # Populate the isolated warm cache outside timing.
+                for _ in range(args.iterations):
                     start = time.perf_counter()
-                    ast = parse_aurane(source)
-                    parse_time = time.perf_counter() - start
-                    times["parse"].append(parse_time)
-
-                    # Compile timing
+                    parse_aurane(source)
+                    times["parse"].append(time.perf_counter() - start)
                     start = time.perf_counter()
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
-                        compile_file(str(file_path), tmp.name)
-                        tmp_path = tmp.name
-                    compile_time = time.perf_counter() - start
-                    times["compile"].append(compile_time)
-                    times["total"].append(parse_time + compile_time)
-
-                    Path(tmp_path).unlink()
-                    progress.update(task, advance=1)
-
-        # Calculate and show statistics
-        show_benchmark_results(times, file_path)
+                    compile_source(source, disable_cache=True)
+                    times["cold_compile"].append(time.perf_counter() - start)
+                    start = time.perf_counter()
+                    compile_source(source)
+                    times["warm_compile"].append(time.perf_counter() - start)
+            finally:
+                os.chdir(original_directory)
+        if json_output:
+            print(json.dumps({"ok": True, "seconds": times, "iterations": args.iterations}))
+        elif RICH_AVAILABLE and console is not None:
+            show_benchmark_results(times, file_path)
+        else:
+            print(times)
         return 0
-
-    except Exception as e:
-        console.print(f"[red][FAIL] Error:[/red] {e}")
+    except Exception as error:
+        if json_output:
+            print(json.dumps({"ok": False, "error": str(error)}))
+        elif RICH_AVAILABLE and console is not None:
+            console.print(f"[red][FAIL] Error:[/red] {error}")
+        else:
+            print(f"Error: {error}")
         return 1
 
 
@@ -77,7 +72,7 @@ def show_benchmark_results(times, file_path):
     table.add_column("Min", justify="right")
     table.add_column("Max", justify="right")
 
-    for phase in ["parse", "compile", "total"]:
+    for phase in times:
         data = times[phase]
         table.add_row(
             phase.capitalize(),

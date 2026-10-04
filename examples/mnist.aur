@@ -1,6 +1,5 @@
 use torch
 use torchvision
-use aurane.ml as aml
 
 experiment MnistBaseline:
     seed = 42
@@ -11,12 +10,14 @@ dataset mnist_train:
     from torchvision.datasets.MNIST
     root = "./data"
     train = True
+    download = True
     batch = 128
 
 dataset mnist_test:
     from torchvision.datasets.MNIST
     root = "./data"
     train = False
+    download = True
     batch = 256
 
 model MnistNet:

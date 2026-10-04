@@ -6,7 +6,34 @@ parsed Aurane code before code generation.
 """
 
 from dataclasses import dataclass, field
+from .diagnostics import SourceSpan
 from typing import Any, List, Dict, Optional, Union
+
+
+class SymbolReference(str):
+    """An unquoted constant name, distinct from a literal string."""
+
+    line: int
+    column: int
+
+    def __new__(cls, name: str, line: int = 0, column: int = 0):
+        value = super().__new__(cls, name)
+        value.line = line
+        value.column = column
+        return value
+
+
+class ConfigCall(str):
+    """A named configuration call with parsed, non-executable arguments."""
+
+    args: List[Any]
+    kwargs: Dict[str, Any]
+
+    def __new__(cls, text: str, args=None, kwargs=None):
+        value = super().__new__(cls, text)
+        value.args = list(args or [])
+        value.kwargs = dict(kwargs or {})
+        return value
 
 
 @dataclass(kw_only=True)
@@ -15,6 +42,9 @@ class ASTNode:
 
     line: int = 0
     column: int = 0
+    end_line: int = 0
+    end_column: int = 0
+    config_spans: Dict[str, SourceSpan] = field(default_factory=dict, compare=False)
 
 
 @dataclass

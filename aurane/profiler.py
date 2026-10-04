@@ -16,10 +16,11 @@ from .ast import (
     AuraneProgram,
     ModelNode,
     LayerOperation,
-    ForwardBlock,
-    ForwardGraphBlock,
 )
-from .shapes import infer_output_shape, calculate_params, to_int
+from .shapes import infer_output_shape, calculate_params
+from .symbols import resolve_program, resolve_model
+from .ir import lower_model
+from .dtypes import DTYPE_BYTES
 
 
 @dataclass
@@ -49,6 +50,7 @@ class ModelProfile:
     bottleneck_layer: Optional[str] = None
     input_shape: tuple = ()
     output_shape: tuple = ()
+    batch_size: int = 1
 
     def summary(self) -> Dict[str, Any]:
         """Get summary statistics."""
@@ -63,6 +65,7 @@ class ModelProfile:
             "bottleneck": self.bottleneck_layer,
             "input_shape": self.input_shape,
             "output_shape": self.output_shape,
+            "batch_size": self.batch_size,
         }
 
     @staticmethod
@@ -102,7 +105,7 @@ class ModelProfiler:
     """
 
     def __init__(self, model: ModelNode):
-        self.model = model
+        self.model = resolve_model(model)
         self.profile = ModelProfile(model_name=model.name)
 
     def profile_model(self, batch_size: int = 1) -> ModelProfile:
@@ -115,6 +118,9 @@ class ModelProfiler:
         Returns:
             ModelProfile with detailed profiling information.
         """
+        if type(batch_size) is not int or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        self.profile = ModelProfile(model_name=self.model.name, batch_size=batch_size)
         if not self.model.forward_block:
             return self.profile
 
@@ -123,93 +129,32 @@ class ModelProfiler:
             input_shape = tuple(input_shape)
 
         self.profile.input_shape = input_shape
-        if isinstance(self.model.forward_block, ForwardGraphBlock):
-            shape_env = {self.model.forward_block.parameter: input_shape}
-            output_var = self.model.forward_block.output_var or (
-                self.model.forward_block.nodes[-1].target
-                if self.model.forward_block.nodes
-                else self.model.forward_block.parameter
-            )
-            for idx, node in enumerate(self.model.forward_block.nodes):
-                op = node.operation
-                if op is None:
-                    continue
-                op_name = op.operation.lower()
-                inputs = node.inputs
-
-                if op_name == "add":
-                    in_shape = shape_env.get(inputs[0], input_shape)
-                    output_shape = in_shape
-                elif op_name == "concat":
-                    dim = int(op.kwargs.get("dim", 1))
-                    shapes_in = [shape_env.get(v, input_shape) for v in inputs]
-                    if shapes_in and all(len(s) == len(shapes_in[0]) for s in shapes_in):
-                        out_dims = list(shapes_in[0])
-                        dim_sum = 0
-                        for s in shapes_in:
-                            d = s[dim] if len(s) > dim else -1
-                            if d == -1 or dim_sum == -1:
-                                dim_sum = -1
-                                break
-                            dim_sum += d
-                        out_dims[dim] = dim_sum
-                        output_shape = tuple(out_dims)
-                    else:
-                        output_shape = shapes_in[0] if shapes_in else input_shape
-                    in_shape = shape_env.get(inputs[0], input_shape)
-                else:
-                    in_shape = shape_env.get(inputs[0], input_shape)
-                    output_shape = infer_output_shape(op, in_shape)
-
-                flops = self._calculate_flops(op, in_shape, output_shape)
-                params = calculate_params(op, in_shape)
-                memory = self._calculate_memory(output_shape, batch_size)
-
-                layer_profile = LayerProfile(
-                    name=f"node_{idx}:{node.target}",
-                    operation=op.operation,
+        graph = lower_model(self.model)
+        for index, node in enumerate(graph.nodes):
+            assert node.output is not None
+            operation = node.to_operation()
+            in_shape = node.inputs[0].shape
+            output_shape = node.output.shape
+            assert in_shape is not None and output_shape is not None
+            flops = self._calculate_flops(operation, in_shape, output_shape)
+            params = calculate_params(operation, in_shape)
+            memory = self._calculate_memory(output_shape, batch_size, node.output.type_hint)
+            self.profile.layers.append(
+                LayerProfile(
+                    name=f"layer_{index}",
+                    operation=operation.operation,
                     input_shape=in_shape,
                     output_shape=output_shape,
                     flops=flops,
                     params=params,
                     memory_bytes=memory,
                 )
-
-                self.profile.layers.append(layer_profile)
-                self.profile.total_flops += flops
-                self.profile.total_params += params
-                self.profile.total_memory_bytes += memory
-
-                shape_env[node.target] = output_shape
-
-            self.profile.output_shape = shape_env.get(output_var, input_shape)
-        else:
-            current_shape = input_shape
-
-            for idx, op in enumerate(self.model.forward_block.operations):
-                output_shape = infer_output_shape(op, current_shape)
-                flops = self._calculate_flops(op, current_shape, output_shape)
-                params = calculate_params(op, current_shape)
-                memory = self._calculate_memory(output_shape, batch_size)
-
-                layer_profile = LayerProfile(
-                    name=f"layer_{idx}",
-                    operation=op.operation,
-                    input_shape=current_shape,
-                    output_shape=output_shape,
-                    flops=flops,
-                    params=params,
-                    memory_bytes=memory,
-                )
-
-                self.profile.layers.append(layer_profile)
-                self.profile.total_flops += flops
-                self.profile.total_params += params
-                self.profile.total_memory_bytes += memory
-
-                current_shape = output_shape
-
-            self.profile.output_shape = current_shape
+            )
+            self.profile.total_flops += flops
+            self.profile.total_params += params
+            self.profile.total_memory_bytes += memory
+        assert graph.outputs[0].shape is not None
+        self.profile.output_shape = graph.outputs[0].shape
 
         # Calculate percentages and find bottleneck
         self._calculate_percentages()
@@ -232,22 +177,39 @@ class ModelProfiler:
                 return int(val)
             return default
 
-        if op_name == "conv2d":
-            if len(input_shape) == 3 and len(output_shape) == 3:
-                in_channels = input_shape[0]
-                out_channels, h_out, w_out = output_shape
-                kernel = to_int(op.kwargs.get("kernel", 3), 3)
+        if op_name in ("conv1d", "conv2d"):
+            kernel = op.kwargs.get("kernel", 3)
+            groups = op.kwargs.get("groups", 1)
+            return int(
+                2
+                * kernel ** (len(input_shape) - 1)
+                * (input_shape[0] // groups)
+                * math.prod(output_shape)
+            )
 
-                # FLOPs = 2 * K^2 * Cin * Cout * Hout * Wout
-                flops = 2 * kernel * kernel * in_channels * out_channels * h_out * w_out
-                return int(flops)
-            return 0
+        elif op_name in ("lstm", "gru"):
+            # Matrix multiply-add estimate; excludes pointwise gates and bias additions.
+            hidden = op.args[0] if op.args else 128
+            directions = 2 if op.kwargs.get("bidirectional", False) else 1
+            gates = 4 if op_name == "lstm" else 3
+            layers = op.kwargs.get("num_layers", 1)
+            return int(
+                2
+                * input_shape[0]
+                * sum(
+                    directions
+                    * gates
+                    * hidden
+                    * ((input_shape[-1] if index == 0 else directions * hidden) + hidden)
+                    for index in range(layers)
+                )
+            )
 
         elif op_name in ("dense", "linear"):
-            in_features = input_shape[0] if input_shape else 128
-            out_features = output_shape[0] if output_shape else 128
+            in_features = input_shape[-1] if input_shape else 128
+            out_features = output_shape[-1] if output_shape else 128
             # FLOPs = 2 * in * out (multiply + add)
-            return int(2 * in_features * out_features)
+            return int(2 * math.prod(input_shape[:-1]) * in_features * out_features)
 
         elif op_name in ("maxpool", "avgpool"):
             if len(output_shape) == 3:
@@ -284,7 +246,9 @@ class ModelProfiler:
         """Calculate parameters for an operation."""
         return calculate_params(op, input_shape)
 
-    def _calculate_memory(self, output_shape: tuple, batch_size: int) -> int:
+    def _calculate_memory(
+        self, output_shape: tuple, batch_size: int, dtype: Optional[str] = None
+    ) -> int:
         """Calculate memory for activations in bytes."""
         if not output_shape:
             return 0
@@ -294,8 +258,8 @@ class ModelProfiler:
         for dim in output_shape:
             num_elements *= dim
 
-        # Assume float32 (4 bytes)
-        return num_elements * 4
+        # Unknown input-only paths retain the documented float32 estimate.
+        return num_elements * DTYPE_BYTES.get(dtype or "float32", 4)
 
     def _calculate_percentages(self):
         """Calculate percentage of total for each layer."""
@@ -350,7 +314,7 @@ def profile_program(program: AuraneProgram, batch_size: int = 1) -> Dict[str, Mo
         Dictionary mapping model names to profiles.
     """
     profiles = {}
-    for model in program.models:
+    for model in resolve_program(program).models:
         profiles[model.name] = profile_model(model, batch_size)
     return profiles
 
@@ -365,7 +329,9 @@ def format_profile(profile: ModelProfile, detailed: bool = False) -> str:
     lines.append(f"  Output Shape: {profile.output_shape}")
     lines.append(f"  Total Parameters: {summary['total_params_readable']}")
     lines.append(f"  Total FLOPs: {summary['total_flops_readable']}")
-    lines.append(f"  Memory (batch=1): {summary['total_memory_mb']:.2f} MB")
+    lines.append(
+        f"  Activation memory (batch={profile.batch_size}, inferred dtype; unknown=4 bytes): {summary['total_memory_mb']:.2f} MB"
+    )
     lines.append(f"  Bottleneck: {summary['bottleneck']}")
 
     if detailed and profile.layers:

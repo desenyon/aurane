@@ -6,7 +6,8 @@ import re
 
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
-from ...parser import parse_aurane
+from ...parser import parse_aurane, Parser
+from ...compiler import _atomic_write
 
 BLOCK_PATTERN = re.compile(r"^(def|model|dataset|train|train_gan|experiment)\b.*[^:]$")
 
@@ -34,21 +35,27 @@ def cmd_lint(args):
 
             # Whitespace
             if line != line.rstrip():
-                issues.append(("info", f"Line {i}: Trailing whitespace"))
+                issues.append(("info", f"W001 Line {i}: Trailing whitespace"))
                 if getattr(args, "auto_fix", False):
                     line = line.rstrip()
                     fixed = True
 
             # Missing colons on blocks
-            stripped = line.strip()
+            try:
+                code = Parser(line)._line().rstrip()
+            except Exception:
+                code = line.rstrip()
+            stripped = code.strip()
             if "=" not in stripped and BLOCK_PATTERN.match(stripped):
-                issues.append(("warning", f"Line {i}: Missing colon at end of block definition"))
+                issues.append(
+                    ("warning", f"W002 Line {i}: Missing colon at end of block definition")
+                )
                 if getattr(args, "auto_fix", False):
-                    line = line + ":"
+                    line = line[: len(code)] + ":" + line[len(code) :]
                     fixed = True
 
             if len(line) > 100:
-                issues.append(("warning", f"Line {i}: Line too long ({len(line)} > 100)"))
+                issues.append(("warning", f"W003 Line {i}: Line too long ({len(line)} > 100)"))
 
             new_lines.append(line)
 
@@ -58,10 +65,11 @@ def cmd_lint(args):
         try:
             ast = parse_aurane(new_source)
         except Exception as e:
-            issues.append(("error", f"Parse error: {e}"))
+            issues.append(("error", f"E001 Parse error: {e}"))
+            fixed = False
 
         if getattr(args, "auto_fix", False) and fixed:
-            file_path.write_text(new_source)
+            _atomic_write(file_path, new_source)
             console.print("[green][OK] Applied auto-fixes.[/green]\n")
 
         # Display results
@@ -73,6 +81,7 @@ def cmd_lint(args):
             color = {"error": "red", "warning": "yellow", "info": "cyan"}.get(sev, "white")
             if (
                 getattr(args, "auto_fix", False)
+                and fixed
                 and sev in ("info", "warning")
                 and "Line too long" not in msg
             ):
