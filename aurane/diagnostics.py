@@ -1,7 +1,8 @@
 """Source spans carried through analysis and machine-readable diagnostics."""
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,20 @@ class LocatedError(ValueError):
     def __init__(self, message, span):
         self.span = span
         super().__init__(f"{message} at line {span.line}, column {span.column}")
+
+
+@dataclass(frozen=True)
+class CompilationDiagnostic:
+    """A stable, serializable error across compiler API and CLI boundaries."""
+
+    stage: str
+    message: str
+    span: Optional[SourceSpan] = None
+    code: Optional[str] = None
+    location: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @contextmanager

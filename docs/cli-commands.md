@@ -1,7 +1,8 @@
 # CLI reference
 
 Use `aurane COMMAND --help` for the installed version's exact flags.
-The commands below describe Aurane 3.0.0.
+The commands below describe this source checkout, including unreleased improvements
+on top of 3.0.0.
 
 ## Compile and check
 
@@ -17,7 +18,15 @@ stdout is Python and diagnostics go to stderr. `--quiet` reduces progress;
 output. `--format` requires Black. `--analyze` adds semantic analysis and
 `--validate` adds type checks; constant resolution and graph lowering always run.
 `--optimize --opt-level 0|1|2` controls the conservative AST optimizer.
-The bundled backend is `--backend torch`.
+The bundled backend is `--backend torch`. Compile, run and watch share those
+compiler options. All three also accept `--no-cache`, `--cache-dir PATH`, and
+`--diagnostics-format text|json`. Cache path precedence is explicit path,
+`AURANE_CACHE_DIR`, then `.aurane_cache`, relative to the compiler working directory.
+Disabled caching performs no cache IO. Custom unversioned backends remain uncached.
+JSON compilation failures are written to stderr, with `ok: false` and an `error`
+object containing `stage`, `source`, `message`, and `diagnostics`. Diagnostic spans
+are preserved; errors without source locations have null spans. Runtime tracebacks
+from the generated child process are not converted to compiler diagnostics.
 
 Compilation failures preserve existing output. Successful file publication is
 atomic. Using the source file itself as output is rejected.
@@ -71,7 +80,9 @@ interruption returns 130 and still cleans up the temporary file.
 `watch` performs an initial compile and handles modification, creation, deletion
 and atomic replacement events. It waits briefly for a burst to settle and compiles
 its final contents. Invalid edits preserve the previous artifact; a later valid
-save recovers. Ctrl+C shuts down the observer.
+save recovers. Ctrl+C shuts down the observer. `--poll` uses directory polling
+where native events are unavailable. `--format` formats each generated artifact
+with Black before atomic publication.
 
 ## Format and lint
 
@@ -83,7 +94,9 @@ aurane lint model.aur --auto-fix
 
 `format` trims trailing whitespace and ensures a final newline, preserving block
 indentation, strings and comments. It accepts one file or a directory.
-`--check` does not write and exits 1 if formatting would change a file.
+`--check` does not write and exits 1 if formatting would change a file. Publication
+is atomic per file and preserves target modes. File symlinks are retained and their
+resolved targets formatted; a directory operation is not a batch transaction.
 
 `lint` reports these rules:
 
@@ -109,6 +122,7 @@ Iterations must be positive (default 10). Parsing, complete cold compilation,
 and warm cache reads are measured separately. Cold compilation already includes
 parsing, so these timings must not be summed. Timing excludes source/output file
 IO. The warm cache lives in an isolated temporary directory that is removed.
+Benchmarking does not change process cwd or use `AURANE_CACHE_DIR`.
 Text output reports mean, median, standard deviation, min and max; JSON returns
 raw durations in seconds under `parse`, `cold_compile`, and `warm_compile`.
 This measures compiler behavior, not model execution speed.

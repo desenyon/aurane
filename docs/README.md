@@ -64,7 +64,9 @@ Welcome to the Aurane documentation! This directory contains comprehensive guide
 ### Code Quality
 - [CLI Commands - Format](cli-commands.md#format-and-lint)
 - [CLI Commands - Lint](cli-commands.md#format-and-lint)
-- [QA evidence and limits](qa-report.md)
+- [Historical 3.0 QA evidence](qa-report.md)
+- [Compiler pipeline design](compiler-pipeline.md)
+- [Compiler pipeline verification](compiler-pipeline-qa.md)
 
 ### Performance
 - [CLI Commands - Benchmark](cli-commands.md#benchmark)

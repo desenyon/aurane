@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Share an invocation-local resolved AST and lazy graphs across compiler checks and
+  the Torch backend; invalidate graphs after optimization and preserve AST plugins.
+- Preserve compilation stages, source spans and diagnostic lists through file/API
+  boundaries; add JSON compilation failures on stderr.
+- Unify compile/run/watch analysis, optimization and cache options. Support explicit
+  cache directories and `AURANE_CACHE_DIR`, plus polling watch mode.
+- Publish formatted source atomically and isolate benchmark caches without changing
+  the process working directory.
+- Initialize Python and optional NumPy RNGs from experiment seeds, and reject
+  parameter-free/frozen training models before constructing data loaders.
+- Expand regression and installed-wheel checks and document architecture, migration,
+  reproducibility boundaries and verification. Package version remains 3.0.0.
+
 ## 3.0.0 - 2026-10-03
 
 ### Added

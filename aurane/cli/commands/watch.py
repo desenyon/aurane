@@ -8,6 +8,7 @@ from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
 from .compile import cmd_compile
+from ..compilation import compiler_options, report_compilation_error
 
 
 def _compile_args_from_watch_args(args):
@@ -16,12 +17,9 @@ def _compile_args_from_watch_args(args):
         input=args.input,
         output=args.output,
         output_override=None,
-        backend=args.backend,
-        analyze=getattr(args, "analyze", False),
-        validate=False,
-        optimize=False,
-        opt_level=1,
-        format=False,
+        **compiler_options(args),
+        format=getattr(args, "format", False),
+        diagnostics_format=getattr(args, "diagnostics_format", "text"),
         show_ast=False,
         diff=False,
         quiet=False,
@@ -37,13 +35,18 @@ def cmd_watch(args) -> int:
 
     try:
         from watchdog.observers import Observer
+        from watchdog.observers.api import BaseObserver
         from watchdog.events import FileSystemEventHandler
     except ImportError:
         console.print("[red]Watch mode requires 'watchdog' library.[/red]")
         console.print("Install with: pip install watchdog")
         return 1
 
-    input_path = validate_file(args.input, [".aur"]).absolute()
+    try:
+        input_path = validate_file(args.input, [".aur"]).absolute()
+    except (OSError, ValueError) as error:
+        report_compilation_error(error, args)
+        return 1
     changes: Queue[None] = Queue()
 
     class AuraneFileHandler(FileSystemEventHandler):
@@ -61,7 +64,13 @@ def cmd_watch(args) -> int:
 
     console.print(f"[cyan]Watching:[/cyan] {args.input}")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-    observer = Observer()
+    observer: BaseObserver
+    if getattr(args, "poll", False):
+        from watchdog.observers.polling import PollingObserver
+
+        observer = PollingObserver(timeout=0.25)
+    else:
+        observer = Observer()
     observer.schedule(AuraneFileHandler(), str(input_path.parent), recursive=False)
     observer.start()
     try:

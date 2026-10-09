@@ -138,8 +138,11 @@ alignment. Runtime length may vary within the positional encoding limit.
 At most one `experiment` block is allowed. Its fields are `seed` (a nonnegative
 64-bit PyTorch seed), `device` (`cpu`, `cuda`, `mps`, or `auto`, with optional device
 indices), and `backend = "torch"`. Auto selects CUDA when available, otherwise CPU.
-Without an experiment, generated training uses CPU. Set Python/NumPy or custom
-dataset seeds externally when those sources also need reproducible initial runs.
+Without an experiment, generated training uses CPU. An experiment seed initializes
+PyTorch, Python random and NumPy when installed (modulo 2^32 for NumPy) when the
+generated module executes, including on import. Calls to training functions do not
+reseed. Custom RNGs, workers and nondeterministic device kernels require separate
+controls; no cross-platform determinism is promised.
 Backend plugins are selected through the compiler API/CLI, not the experiment.
 Duplicate definitions and imports that replace generated runtime bindings fail.
 

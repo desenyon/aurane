@@ -18,8 +18,8 @@ from .ast import (
     ForwardGraphBlock,
 )
 from .shapes import infer_output_shape
-from .symbols import resolve_program, ResolutionError
-from .ir import lower_model
+from .symbols import ResolutionError
+from .preparation import PreparedProgram, prepare_program
 from .diagnostics import SourceSpan
 from .configuration import (
     validate_program_configuration,
@@ -107,8 +107,9 @@ class TypeChecker:
     - Configuration validation
     """
 
-    def __init__(self, program: AuraneProgram):
-        self.program = program
+    def __init__(self, program: AuraneProgram | PreparedProgram):
+        self._input = program
+        self.program = program.program if isinstance(program, PreparedProgram) else program
         self.result = TypeCheckResult()
         self.symbol_table: Dict[str, Any] = {}
         self.model_shapes: Dict[str, Dict[str, TensorType]] = {}
@@ -116,7 +117,8 @@ class TypeChecker:
     def check(self) -> TypeCheckResult:
         """Run all type checking passes."""
         try:
-            self.program = resolve_program(self.program)
+            self.prepared = prepare_program(self._input)
+            self.program = self.prepared.program
         except ResolutionError as error:
             self.result.errors.append(
                 TypeAnalysisError(str(error), "constants", span=getattr(error, "span", None))
@@ -235,7 +237,7 @@ class TypeChecker:
         shapes: Dict[str, TensorType] = {"input": TensorType(shape=input_shape_tuple)}
 
         try:
-            graph = lower_model(model)
+            graph = self.prepared.graph_for(model)
             shapes["input"].dtype = graph.inputs[0].type_hint or "unknown"
             for index, node in enumerate(graph.nodes):
                 assert node.output is not None
@@ -312,7 +314,7 @@ class TypeChecker:
                     )
 
 
-def check_types(program: AuraneProgram) -> TypeCheckResult:
+def check_types(program: AuraneProgram | PreparedProgram) -> TypeCheckResult:
     """
     Perform type checking on an Aurane program.
 

@@ -4,7 +4,6 @@ Benchmark command for Aurane CLI.
 
 import time
 import tempfile
-import os
 import json
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
@@ -26,23 +25,18 @@ def cmd_benchmark(args):
         file_path = validate_file(args.input, [".aur"]).resolve()
         source = file_path.read_text(encoding="utf-8")
         times = {"parse": [], "cold_compile": [], "warm_compile": []}
-        original_directory = os.getcwd()
         with tempfile.TemporaryDirectory(prefix="aurane-benchmark-") as directory:
-            try:
-                os.chdir(directory)
-                compile_source(source)  # Populate the isolated warm cache outside timing.
-                for _ in range(args.iterations):
-                    start = time.perf_counter()
-                    parse_aurane(source)
-                    times["parse"].append(time.perf_counter() - start)
-                    start = time.perf_counter()
-                    compile_source(source, disable_cache=True)
-                    times["cold_compile"].append(time.perf_counter() - start)
-                    start = time.perf_counter()
-                    compile_source(source)
-                    times["warm_compile"].append(time.perf_counter() - start)
-            finally:
-                os.chdir(original_directory)
+            compile_source(source, cache_dir=directory)
+            for _ in range(args.iterations):
+                start = time.perf_counter()
+                parse_aurane(source)
+                times["parse"].append(time.perf_counter() - start)
+                start = time.perf_counter()
+                compile_source(source, disable_cache=True)
+                times["cold_compile"].append(time.perf_counter() - start)
+                start = time.perf_counter()
+                compile_source(source, cache_dir=directory)
+                times["warm_compile"].append(time.perf_counter() - start)
         if json_output:
             print(json.dumps({"ok": True, "seconds": times, "iterations": args.iterations}))
         elif RICH_AVAILABLE and console is not None:
