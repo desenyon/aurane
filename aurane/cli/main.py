@@ -20,6 +20,7 @@ from .commands.interactive import cmd_interactive
 from .commands.init import cmd_init
 from .commands.clean import cmd_clean
 from .commands.ir import cmd_ir
+from .compilation import add_compilation_options
 
 
 def main():
@@ -55,25 +56,7 @@ def main():
         default=None,
         help="Optional output .py file (overrides positional output)",
     )
-    compile_parser.add_argument(
-        "--backend", default="torch", choices=["torch"], help="Transpiler backend"
-    )
-    compile_parser.add_argument(
-        "--analyze", action="store_true", help="Analyze model during compilation"
-    )
-    compile_parser.add_argument("--validate", action="store_true", help="Perform static analysis")
-    compile_parser.add_argument(
-        "--optimize",
-        action="store_true",
-        help="Optimize the model AST before code generation",
-    )
-    compile_parser.add_argument(
-        "--opt-level",
-        type=int,
-        default=1,
-        choices=[0, 1, 2],
-        help="Optimization level used with --optimize",
-    )
+    add_compilation_options(compile_parser)
     compile_parser.add_argument("--format", action="store_true", help="Format output using black")
     compile_parser.add_argument("--show-ast", action="store_true", help="Show AST tree")
     compile_parser.add_argument("--diff", action="store_true", help="Show code comparison")
@@ -143,9 +126,7 @@ def main():
     # Run command
     run_parser = subparsers.add_parser("run", help="Compile and run immediately")
     run_parser.add_argument("input", help="Input .aur file")
-    run_parser.add_argument(
-        "--backend", default="torch", choices=["torch"], help="Transpiler backend"
-    )
+    add_compilation_options(run_parser)
     run_parser.add_argument(
         "--keep-temp", action="store_true", help="Keep the temporary compiled Python file"
     )
@@ -182,11 +163,10 @@ def main():
     watch_parser = subparsers.add_parser("watch", help="Watch file and recompile")
     watch_parser.add_argument("input", help="Input .aur file")
     watch_parser.add_argument("output", help="Output .py file")
+    add_compilation_options(watch_parser)
+    watch_parser.add_argument("--format", action="store_true", help="Format output using black")
     watch_parser.add_argument(
-        "--backend", default="torch", choices=["torch"], help="Transpiler backend"
-    )
-    watch_parser.add_argument(
-        "--analyze", action="store_true", help="Analyze model on each compile"
+        "--poll", action="store_true", help="Poll for changes on filesystems without native events"
     )
 
     # Interactive command

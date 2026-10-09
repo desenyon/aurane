@@ -61,12 +61,24 @@ def wait_for_output(path, fragment, process):
     pytest.fail(f"watch did not produce {fragment!r}")
 
 
-def test_watch_handles_atomic_saves_bursts_and_invalid_then_valid_source(tmp_path):
+@pytest.mark.parametrize("poll", [False, True])
+def test_watch_handles_atomic_saves_bursts_and_invalid_then_valid_source(tmp_path, poll):
     source, output = tmp_path / "model.aur", tmp_path / "model.py"
     source.write_text(SOURCE)
     with (tmp_path / "watch.log").open("w") as log:
         process = subprocess.Popen(
-            [sys.executable, "-m", "aurane.cli", "watch", str(source), str(output)],
+            [
+                sys.executable,
+                "-m",
+                "aurane.cli",
+                "watch",
+                str(source),
+                str(output),
+                "--validate",
+                "--optimize",
+                "--no-cache",
+                *(["--poll"] if poll else []),
+            ],
             cwd=ROOT,
             stdout=log,
             stderr=log,

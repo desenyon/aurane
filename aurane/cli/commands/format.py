@@ -3,6 +3,7 @@ Format command for Aurane CLI.
 """
 
 from pathlib import Path
+from ...file_io import atomic_write
 from ..ui import console, RICH_AVAILABLE
 
 
@@ -20,12 +21,12 @@ def cmd_format(args):
 
         formatted_count = 0
         for file in files:
-            original = file.read_text()
+            original = file.read_text(encoding="utf-8")
             formatted = format_aurane_code(original)
 
             if original != formatted:
                 if not args.check:
-                    file.write_text(formatted)
+                    atomic_write(file.resolve(strict=True), formatted)
                     console.print(f"[green][OK][/green] Formatted {file}")
                 else:
                     console.print(f"[yellow][!][/yellow] Would format {file}")

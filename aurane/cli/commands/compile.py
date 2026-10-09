@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE, get_progress
 from ..utils import validate_file, get_file_stats
+from ..compilation import compiler_options, json_diagnostics, report_compilation_error
 from ...compiler import compile_source, CompilationError, write_compiled_output
 from ...parser import parse_aurane, ParseError
 
@@ -21,7 +22,12 @@ except ImportError:
 
 def cmd_compile(args):
     """Enhanced compile command with rich output."""
-    if (not args.output and not args.output_override) or not RICH_AVAILABLE or console is None:
+    if (
+        json_diagnostics(args)
+        or (not args.output and not args.output_override)
+        or not RICH_AVAILABLE
+        or console is None
+    ):
         return cmd_compile_basic(args)
 
     try:
@@ -55,11 +61,7 @@ def cmd_compile(args):
                 progress.update(task, advance=20, description="[cyan]Analyzing & optimizing...")
                 python_code = compile_source(
                     source,
-                    backend=args.backend,
-                    analyze=args.analyze,
-                    validate=args.validate,
-                    optimize=args.optimize,
-                    opt_level=args.opt_level,
+                    **compiler_options(args),
                 )
                 progress.update(task, advance=70, description="[cyan]Post-processing output...")
 
@@ -70,11 +72,7 @@ def cmd_compile(args):
         else:
             python_code = compile_source(
                 source,
-                backend=args.backend,
-                analyze=args.analyze,
-                validate=args.validate,
-                optimize=args.optimize,
-                opt_level=args.opt_level,
+                **compiler_options(args),
             )
             if args.format:
                 python_code = _maybe_black_format(python_code, args)
@@ -109,10 +107,10 @@ def cmd_compile(args):
         return 0
 
     except CompilationError as e:
-        console.print(f"\n[red][FAIL] Compilation Error:[/red]\n{e}")
+        report_compilation_error(e, args)
         return 1
     except Exception as e:
-        console.print(f"\n[red][FAIL] Unexpected Error:[/red]\n{e}")
+        report_compilation_error(e, args)
         return 1
 
 
@@ -125,15 +123,11 @@ def cmd_compile_basic(args):
             output_path = Path(args.output)
 
         source = input_file.read_text(encoding="utf-8")
-        if args.show_ast and not args.quiet:
+        if args.show_ast and not args.quiet and not json_diagnostics(args):
             print(parse_aurane(source), file=sys.stderr)
         python_code = compile_source(
             source,
-            backend=args.backend,
-            analyze=args.analyze,
-            validate=args.validate,
-            optimize=args.optimize,
-            opt_level=args.opt_level,
+            **compiler_options(args),
         )
         if args.format:
             python_code = _maybe_black_format(python_code, args)
@@ -142,13 +136,13 @@ def cmd_compile_basic(args):
             if args.diff and output_path.exists():
                 _print_diff(output_path.read_text(encoding="utf-8"), python_code, output_path)
             write_compiled_output(input_file, output_path, python_code)
-            if not args.quiet:
+            if not args.quiet and not json_diagnostics(args):
                 print(f"OK: {args.input} -> {output_path}", file=sys.stderr)
         else:
             sys.stdout.write(python_code)
         return 0
     except Exception as e:
-        print(f"[FAIL] Error: {e}", file=sys.stderr)
+        report_compilation_error(e, args)
         return 1
 
 
@@ -164,8 +158,11 @@ def _maybe_black_format(python_code: str, args) -> str:
             return python_code
     except ImportError as e:
         raise CompilationError(
-            "Requested --format but 'black' is not installed. Install dev dependencies: pip install aurane[dev]"
+            "Requested --format but 'black' is not installed. Install dev dependencies: pip install aurane[dev]",
+            stage="format",
         ) from e
+    except Exception as error:
+        raise CompilationError(f"Python formatting failed: {error}", stage="format") from error
 
 
 def _print_diff(old_code: str, new_code: str, output_path: Path) -> None:

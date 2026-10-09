@@ -14,6 +14,9 @@ from typing import Any, Dict
 from ..ui import console, print_section, print_status, RICH_AVAILABLE
 from ..utils import validate_file
 from ...parser import parse_aurane
+from ...ast import AuraneProgram
+from ...preparation import PreparedProgram, prepare_program
+from ...symbols import ResolutionError
 from ...semantic_analyzer import analyze_semantics, format_semantic_issues
 from ...type_checker import check_types, format_type_errors
 
@@ -47,7 +50,13 @@ def cmd_check(args) -> int:
         file_path = validate_file(args.input, [".aur"])
         source = file_path.read_text(encoding="utf-8")
 
-        program = parse_aurane(source)
+        parsed = parse_aurane(source)
+        program: AuraneProgram | PreparedProgram
+        try:
+            program = prepare_program(parsed)
+        except ResolutionError:
+            # Preserve the established semantic/types JSON envelopes on failure.
+            program = parsed
 
         run_semantic = args.semantic or (not args.semantic and not args.types)
         run_types = args.types or (not args.semantic and not args.types)

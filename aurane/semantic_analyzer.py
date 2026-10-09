@@ -12,7 +12,8 @@ from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from .diagnostics import SourceSpan
-from .symbols import resolve_program, ResolutionError
+from .symbols import ResolutionError
+from .preparation import PreparedProgram, prepare_program
 from .configuration import (
     OPTIMIZER_CLASSES,
     LOSS_CLASSES,
@@ -97,8 +98,9 @@ class SemanticAnalyzer:
     - Best practice suggestions
     """
 
-    def __init__(self, program: AuraneProgram):
-        self.program = program
+    def __init__(self, program: AuraneProgram | PreparedProgram):
+        self._input = program
+        self.program = program.program if isinstance(program, PreparedProgram) else program
         self.result = SemanticAnalysisResult()
         self.defined_models: Set[str] = set()
         self.defined_datasets: Set[str] = set()
@@ -107,7 +109,7 @@ class SemanticAnalyzer:
     def analyze(self) -> SemanticAnalysisResult:
         """Run all semantic analysis passes."""
         try:
-            self.program = resolve_program(self.program)
+            self.program = prepare_program(self._input).program
         except ResolutionError as error:
             self._add_issue(
                 IssueKind.ERROR, str(error), "constants", "E009", span=getattr(error, "span", None)
@@ -413,7 +415,7 @@ class SemanticAnalyzer:
         )
 
 
-def analyze_semantics(program: AuraneProgram) -> SemanticAnalysisResult:
+def analyze_semantics(program: AuraneProgram | PreparedProgram) -> SemanticAnalysisResult:
     """
     Perform semantic analysis on an Aurane program.
 

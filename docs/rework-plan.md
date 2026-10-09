@@ -1,6 +1,6 @@
 # Aurane rework: audit, delivery plan, and acceptance gates
 
-Status: local implementation, CPU verification and hosted quality gates complete; 3.0.0 publication pending. Baseline: `5941e3e` (2.0.0), inspected 2026-10-02.
+Historical 3.0 rework record: local implementation, CPU verification and hosted quality gates completed. Publication status is not tracked by this document. Baseline: `5941e3e` (2.0.0), inspected 2026-10-02.
 
 ## Product and implementation
 

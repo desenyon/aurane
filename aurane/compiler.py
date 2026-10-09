@@ -11,34 +11,17 @@ import json
 import os
 import tempfile
 
+from .file_io import atomic_write as _atomic_write
 from .parser import parse_aurane
-from .symbols import resolve_program
+from .preparation import prepare_program
+from .diagnostics import CompilationDiagnostic
 from .semantic_analyzer import analyze_semantics, format_semantic_issues
 from .type_checker import check_types, format_type_errors
-from .optimizer import optimize_ast
 from .backends import get_backend_generator
-from .backends.registry import get_backend_cache_version
+from .backends.registry import get_backend_cache_version, get_prepared_backend_generator
 
 # Bump whenever parser, analysis, optimization or generated-code behavior changes.
-CACHE_SCHEMA = 13
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    """Publish a complete adjacent file, cleaning up failed temporary writes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(text)
-        if path.exists():
-            temporary.chmod(path.stat().st_mode & 0o777)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+CACHE_SCHEMA = 14
 
 
 def write_compiled_output(input_file: Path, output_file: Path, code: str) -> None:
@@ -46,17 +29,31 @@ def write_compiled_output(input_file: Path, output_file: Path, code: str) -> Non
     if input_file.resolve() == output_file.resolve() or (
         output_file.exists() and input_file.samefile(output_file)
     ):
-        raise CompilationError("Output path must not overwrite the source file")
+        raise CompilationError("Output path must not overwrite the source file", stage="write")
     try:
         _atomic_write(output_file, code)
     except OSError as error:
-        raise CompilationError(f"Failed to write output file: {error}") from error
+        raise CompilationError(f"Failed to write output file: {error}", stage="write") from error
 
 
 class CompilationError(Exception):
-    """Exception raised when compilation fails."""
+    """Readable compilation failure with stage and machine-readable diagnostics."""
 
-    pass
+    def __init__(self, message, *, stage="compile", span=None, diagnostics=None, source=None):
+        super().__init__(message)
+        self.stage = stage
+        self.diagnostics = tuple(diagnostics or [CompilationDiagnostic(stage, message, span)])
+        self.span = span or next((item.span for item in self.diagnostics if item.span), None)
+        self.source = source
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": type(self).__name__,
+            "message": str(self),
+            "stage": self.stage,
+            "source": self.source,
+            "diagnostics": [item.to_dict() for item in self.diagnostics],
+        }
 
 
 def compile_file(
@@ -68,6 +65,7 @@ def compile_file(
     optimize: bool = False,
     opt_level: int = 1,
     disable_cache: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> None:
     """
     Compile an Aurane source file to Python.
@@ -89,7 +87,9 @@ def compile_file(
     try:
         source = input_file.read_text(encoding="utf-8")
     except Exception as e:
-        raise CompilationError(f"Failed to read source file: {e}")
+        raise CompilationError(
+            f"Failed to read source file: {e}", stage="read", source=input_path
+        ) from e
 
     # Compile
     try:
@@ -101,13 +101,19 @@ def compile_file(
             optimize=optimize,
             opt_level=opt_level,
             disable_cache=disable_cache,
+            cache_dir=cache_dir,
         )
-    except Exception as e:
-        raise CompilationError(f"Compilation failed: {e}")
+    except CompilationError as error:
+        error.source = str(input_file)
+        raise
 
     # Write output
     output_file = Path(output_path)
-    write_compiled_output(input_file, output_file, python_code)
+    try:
+        write_compiled_output(input_file, output_file, python_code)
+    except CompilationError as error:
+        error.source = str(input_file)
+        raise
 
     print(f"Successfully compiled {input_path} -> {output_path}")
 
@@ -120,6 +126,7 @@ def compile_source(
     validate: bool = False,
     optimize: bool = False,
     opt_level: int = 1,
+    cache_dir: str | Path | None = None,
 ) -> str:
     """
     Compile Aurane source code to Python.
@@ -128,6 +135,7 @@ def compile_source(
         source: The Aurane source code as a string.
         backend: Code generation backend to use (default: "torch").
         disable_cache: If True, do not read from or write to the cache.
+        cache_dir: Cache directory; falls back to AURANE_CACHE_DIR then .aurane_cache.
 
     Returns:
         Generated Python source code as a string.
@@ -141,7 +149,8 @@ def compile_source(
     try:
         generator = get_backend_generator(backend)
     except KeyError as error:
-        raise CompilationError(str(error)) from error
+        raise CompilationError(str(error), stage="backend") from error
+    prepared_generator = get_prepared_backend_generator(backend)
     backend_version = get_backend_cache_version(backend)
     # Dynamic plugins without a declared version cannot provide a stable cache key.
     disable_cache = disable_cache or backend_version is None
@@ -160,7 +169,8 @@ def compile_source(
             "opt_level": opt_level,
         }
         source_hash = hashlib.sha256(json.dumps(cache_key, sort_keys=True).encode()).hexdigest()
-        cache_file = Path(".aurane_cache") / f"{source_hash}.json"
+        directory = cache_dir if cache_dir is not None else os.environ.get("AURANE_CACHE_DIR")
+        cache_file = Path(directory or ".aurane_cache") / f"{source_hash}.json"
         try:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             code = cached["code"]
@@ -175,45 +185,80 @@ def compile_source(
 
     # Parse source to AST
     try:
-        ast = resolve_program(parse_aurane(source))
+        ast = parse_aurane(source)
     except Exception as e:
-        raise CompilationError(f"Parse error: {e}")
+        raise CompilationError(
+            f"Parse error: {e}", stage="parse", span=getattr(e, "span", None)
+        ) from e
+    try:
+        prepared = prepare_program(ast)
+    except Exception as e:
+        raise CompilationError(
+            f"Resolution error: {e}", stage="resolve", span=getattr(e, "span", None)
+        ) from e
 
     # Optional passes before codegen.
     if analyze:
         try:
-            semantic_result = analyze_semantics(ast)
+            semantic_result = analyze_semantics(prepared)
             if semantic_result.has_errors:
-                raise CompilationError(format_semantic_issues(semantic_result))
+                raise CompilationError(
+                    format_semantic_issues(semantic_result),
+                    stage="semantic",
+                    diagnostics=[
+                        CompilationDiagnostic(
+                            "semantic", issue.message, issue.span, issue.code, issue.location
+                        )
+                        for issue in semantic_result.errors
+                    ],
+                )
         except CompilationError:
             raise
         except Exception as e:
-            raise CompilationError(f"Semantic analysis failed: {e}")
+            raise CompilationError(
+                f"Semantic analysis failed: {e}", stage="semantic", span=getattr(e, "span", None)
+            ) from e
 
     if validate:
         try:
-            type_result = check_types(ast)
+            type_result = check_types(prepared)
             if type_result.has_errors:
-                raise CompilationError(format_type_errors(type_result))
+                raise CompilationError(
+                    format_type_errors(type_result),
+                    stage="type",
+                    diagnostics=[
+                        CompilationDiagnostic(
+                            "type", issue.message, issue.span, location=issue.location
+                        )
+                        for issue in type_result.errors
+                    ],
+                )
         except CompilationError:
             raise
         except Exception as e:
-            raise CompilationError(f"Type checking failed: {e}")
+            raise CompilationError(
+                f"Type checking failed: {e}", stage="type", span=getattr(e, "span", None)
+            ) from e
 
     if optimize:
         try:
-            optimized = optimize_ast(ast, level=opt_level)
-            ast = optimized.program
+            prepared = prepared.optimized(opt_level)
         except Exception as e:
-            raise CompilationError(f"Optimization failed: {e}")
+            raise CompilationError(
+                f"Optimization failed: {e}", stage="optimize", span=getattr(e, "span", None)
+            ) from e
 
     # Generate code based on backend
     try:
-        python_code = generator(ast)
-    except KeyError as e:
-        raise CompilationError(str(e))
+        python_code = (
+            prepared_generator(prepared) if prepared_generator else generator(prepared.program)
+        )
+        if not isinstance(python_code, str):
+            raise TypeError("Backend generator must return source text as str")
     except Exception as e:
-        raise CompilationError(f"Code generation error: {e}")
+        raise CompilationError(
+            f"Code generation error: {e}", stage="codegen", span=getattr(e, "span", None)
+        ) from e
 
     # Write to cache
     if not disable_cache:
@@ -234,7 +279,17 @@ def compile_source(
     return python_code
 
 
-def compile_to_temp(source: str, backend: str = "torch", disable_cache: bool = False) -> Path:
+def compile_to_temp(
+    source: str,
+    backend: str = "torch",
+    disable_cache: bool = False,
+    *,
+    analyze: bool = False,
+    validate: bool = False,
+    optimize: bool = False,
+    opt_level: int = 1,
+    cache_dir: str | Path | None = None,
+) -> Path:
     """
     Compile Aurane source to a temporary Python file.
 
@@ -249,13 +304,28 @@ def compile_to_temp(source: str, backend: str = "torch", disable_cache: bool = F
     Raises:
         CompilationError: If compilation fails.
     """
-    import tempfile
-
-    python_code = compile_source(source, backend=backend, disable_cache=disable_cache)
+    python_code = compile_source(
+        source,
+        backend=backend,
+        disable_cache=disable_cache,
+        analyze=analyze,
+        validate=validate,
+        optimize=optimize,
+        opt_level=opt_level,
+        cache_dir=cache_dir,
+    )
 
     # Create temporary file
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
-        f.write(python_code)
-        temp_path = Path(f.name)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            temp_path = Path(f.name)
+            f.write(python_code)
+    except OSError as error:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise CompilationError(f"Failed to write temporary file: {error}", stage="write") from error
 
     return temp_path

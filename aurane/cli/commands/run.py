@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from ..ui import console, RICH_AVAILABLE
 from ..utils import validate_file
+from ..compilation import compiler_options, json_diagnostics, report_compilation_error
 from ...compiler import compile_to_temp
 
 
@@ -17,17 +18,17 @@ def cmd_run(args):
         input_file = validate_file(args.input, [".aur"])
         source = input_file.read_text(encoding="utf-8")
 
-        if RICH_AVAILABLE and console:
+        if RICH_AVAILABLE and console and not json_diagnostics(args):
             console.print(f"[cyan]Compiling:[/cyan] {args.input}")
 
         # Compile to temporary file
-        temp_path = compile_to_temp(source, backend=args.backend)
+        temp_path = compile_to_temp(source, **compiler_options(args))
 
-        if RICH_AVAILABLE and console:
+        if RICH_AVAILABLE and console and not json_diagnostics(args):
             console.print(f"[green][OK][/green] Compiled to temporary file: [dim]{temp_path}[/dim]")
             console.print("[bold cyan]Running...[/bold cyan]")
             console.print("-" * 60)
-        else:
+        elif not json_diagnostics(args):
             print(f"Compiled to temporary file: {temp_path}")
             print("Running...")
             print("-" * 60)
@@ -37,7 +38,7 @@ def cmd_run(args):
 
         # Clean up temporary file
         if args.keep_temp:
-            if RICH_AVAILABLE and console:
+            if RICH_AVAILABLE and console and not json_diagnostics(args):
                 console.print("-" * 60)
                 console.print(f"[yellow]Temporary file kept at:[/yellow] {temp_path}")
             else:
@@ -49,10 +50,7 @@ def cmd_run(args):
     except KeyboardInterrupt:
         return 130
     except Exception as e:
-        if RICH_AVAILABLE and console:
-            console.print(f"[red][FAIL] Error:[/red] {e}")
-        else:
-            print(f"Error: {e}")
+        report_compilation_error(e, args)
         return 1
     finally:
         if temp_path is not None and not args.keep_temp:

@@ -21,8 +21,7 @@ from .ast import (
     LRScheduler,
 )
 from .shapes import infer_output_shape, ACTIVATION_NAMES
-from .symbols import resolve_program
-from .ir import lower_model
+from .preparation import PreparedProgram, prepare_program
 from .dtypes import model_dtypes
 from .configuration import (
     validate_training_options,
@@ -41,8 +40,9 @@ from .runtime_templates import ATTENTION_METHOD, DATA_STATE_HELPERS
 class TorchCodeGenerator:
     """Generates PyTorch code from Aurane AST."""
 
-    def __init__(self, program: AuraneProgram):
-        self.program = resolve_program(program)
+    def __init__(self, program: AuraneProgram | PreparedProgram):
+        self.prepared = prepare_program(program)
+        self.program = self.prepared.program
         self.indent_level = 0
         self.layer_counter: Dict[str, int] = {}  # Track layer counts for naming
         self.layer_map: Dict[int, str] = {}  # Map operation index to layer variable name
@@ -130,6 +130,14 @@ class TorchCodeGenerator:
             seed = experiment.config["seed"]
             lines.extend(
                 [
+                    "import random",
+                    f"random.seed({seed})",
+                    "try:",
+                    "    import numpy as _aurane_numpy",
+                    "except ImportError:",
+                    "    pass",
+                    "else:",
+                    f"    _aurane_numpy.random.seed({seed} % (2 ** 32))",
                     f"torch.manual_seed({seed})",
                     f"if torch.cuda.is_available():",
                     f"    torch.cuda.manual_seed({seed})",
@@ -248,7 +256,7 @@ class TorchCodeGenerator:
         graph = None
         if model.forward_block:
             input_shape = tuple(model.config.get("input_shape", (1, 28, 28)))
-            graph = lower_model(model)
+            graph = self.prepared.graph_for(model)
             self.layer_counter = {}
             self.layer_map = {}
             for index, node in enumerate(graph.nodes):
@@ -542,6 +550,8 @@ class TorchCodeGenerator:
             f"def {function_name}(train_loader=None, validation_loader=None, model=None, resume_from={resume_default!r}, test_loader=None):",
             f"    model = globals()[{train.model_name!r}]() if model is None else model",
             "    model = model.to(device)",
+            "    if not any(parameter.requires_grad for parameter in model.parameters()):",
+            f"        raise ValueError('{train.model_name} training requires trainable parameters; add a parameterized layer or unfreeze the model')",
             "    if train_loader is None:",
             f"        train_loader = _make_{train.dataset_name}_loader()",
         ]
@@ -995,7 +1005,7 @@ class TorchCodeGenerator:
         if sample_format not in ("tensor", "png", "both"):
             raise ValueError("sample_format must be tensor, png or both")
         if sample_format != "tensor":
-            output_shape = lower_model(model).outputs[0].shape
+            output_shape = self.prepared.graph_for(model).outputs[0].shape
             if output_shape is None or len(output_shape) != 3 or output_shape[0] not in (1, 3):
                 raise ValueError(
                     "PNG samples require generator output (1 or 3 channels, height, width)"
@@ -1032,6 +1042,10 @@ class TorchCodeGenerator:
             f"def {function_name}(train_loader=None, generator=None, discriminator=None, resume_from={resume_default!r}):",
             f"    netG = (globals()[{gen!r}]() if generator is None else generator).to(device)",
             f"    netD = (globals()[{disc!r}]() if discriminator is None else discriminator).to(device)",
+            "    if not any(parameter.requires_grad for parameter in netG.parameters()):",
+            "        raise ValueError('GAN generator requires trainable parameters; add a parameterized layer or unfreeze the model')",
+            "    if not any(parameter.requires_grad for parameter in netD.parameters()):",
+            "        raise ValueError('GAN discriminator requires trainable parameters; add a parameterized layer or unfreeze the model')",
             "    if train_loader is None:",
             f"        train_loader = _make_{train.dataset_name}_loader()",
             f"    criterionG = {loss_g}.to(device=device, dtype=next(netD.parameters()).dtype)",
@@ -1234,7 +1248,7 @@ class TorchCodeGenerator:
             return str(value)
 
 
-def generate_torch_code(program: AuraneProgram) -> str:
+def generate_torch_code(program: AuraneProgram | PreparedProgram) -> str:
     """
     Generate PyTorch Python code from an Aurane AST.
 
